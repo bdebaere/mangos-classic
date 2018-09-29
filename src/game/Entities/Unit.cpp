@@ -508,6 +508,73 @@ void Unit::Update(uint32 update_diff, uint32 p_time)
 
     if (isAlive())
         ModifyAuraState(AURA_STATE_HEALTHLESS_20_PERCENT, GetHealth() < GetMaxHealth() * 0.20f);
+
+	// Allow two people to traverse instances.
+	// TODO: world bosses.
+	uint32 mapId = GetMap()->GetId();
+	if (mapId <= 1)
+	{
+		return;
+	}
+
+	if (GetTypeId() == TYPEID_PLAYER)
+	{
+		return;
+	}
+
+	if (GetOwner() && GetOwner()->GetTypeId() == TYPEID_PLAYER)
+	{
+		return;
+	}
+
+	// TODO: not applied for pets?
+	switch (mapId)
+	{
+		case 33: // Shadowfang Keep
+		case 34: // Stormwind Stockade
+		case 36: // Deadmines
+		case 43: // Wailing Caverns
+		case 47: // Razorfen Kraul
+		case 48: // Blackfathom Deeps
+		case 70: // Uldaman
+		case 90: // Gnomeregan
+		case 109: // Sunken Temple
+		case 129: // Razorfen Downs
+		case 189: // Scarlet Monastery
+		case 209: // Zul'Farrak
+		case 229: // Blackrock Spire
+		case 230: // Blackrock Depths
+		case 289: // Scholomance
+		case 329: // Stratholme
+		case 349: // Mauradon
+		case 389: // Ragefire Chasm
+		case 429: // Dire Maul
+			if (GetAura(100000, EFFECT_INDEX_0))
+			{
+				return;
+			}
+			CastSpell(this, 100000, TRIGGERED_OLD_TRIGGERED);
+			break;
+		case 309: // Zul'Gurub
+		case 509: // Ruins of Ahn'Qiraj
+			if (GetAura(100001, EFFECT_INDEX_0))
+			{
+				return;
+			}
+			CastSpell(this, 100001, TRIGGERED_OLD_TRIGGERED);
+			break;
+		case 249: // Onyxia's Lair
+		case 409: // Molten Core
+		case 469: // Blackwing Lair
+		case 531: // Ahn'Qiraj Temple
+		case 533: // Naxxramas
+			if (GetAura(100002, EFFECT_INDEX_0))
+			{
+				return;
+			}
+			CastSpell(this, 100002, TRIGGERED_OLD_TRIGGERED);
+			break;
+	}
 }
 
 void Unit::AddCooldown(SpellEntry const & spellEntry, ItemPrototype const * itemProto, bool permanent, uint32 forcedDuration)
