@@ -166,9 +166,9 @@ class WorldSession
         void SetSecurity(AccountTypes security) { _security = security; }
 #ifdef BUILD_PLAYERBOT
         // Players connected without socket are bot
-        const std::string GetRemoteAddress() const { return m_Socket ? m_Socket->GetRemoteAddress() : "bot"; }
+        const std::string GetRemoteAddress() const { return m_Socket ? m_Socket->GetRemoteAddress() : "disconnected/bot"; }
 #else
-        const std::string GetRemoteAddress() const { return m_Socket->GetRemoteAddress(); }
+        const std::string GetRemoteAddress() const { return m_Socket ? m_Socket->GetRemoteAddress() : "disconnected"; }
 #endif
         void SetPlayer(Player* plr) { _player = plr; }
 
@@ -188,6 +188,11 @@ class WorldSession
         bool ShouldLogOut(time_t currTime) const
         {
             return (_logoutTime > 0 && currTime >= _logoutTime + 20);
+        }
+
+        bool ShouldDisconnect(time_t currTime)
+        {
+            return (_logoutTime > 0 && currTime >= _logoutTime + 60);
         }
 
         void LogoutPlayer(bool save);
