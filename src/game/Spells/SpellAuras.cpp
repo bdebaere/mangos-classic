@@ -775,6 +775,10 @@ void Aura::HandleAddModifier(bool apply, bool Real)
 
     ((Player*)GetTarget())->AddSpellMod(m_spellmod, apply);
 
+    // Heap was freed in player->AddSpellMod(), let class member acknowledge
+    if (m_spellmod && !apply)
+        m_spellmod = nullptr;
+
     ReapplyAffectedPassiveAuras();
 }
 
@@ -1033,16 +1037,16 @@ void Aura::TriggerSpell()
 
             switch (triggeredSpellInfo->EffectImplicitTargetA[0])
             {
-                case TARGET_CHAIN_DAMAGE:
-                case TARGET_DUELVSPLAYER:
+                case TARGET_UNIT_ENEMY:
+                case TARGET_UNIT:
                     triggerCaster = GetCaster();
                     triggerTarget = target;
                     break;
-                case TARGET_SELF:
+                case TARGET_UNIT_CASTER:
                     triggerCaster = target;
                     triggerTarget = target;
                     break;
-                case TARGET_CASTER_COORDINATES: // TODO: this needs to be done whenever target isnt important, doing it per case for safety
+                case TARGET_LOCATION_CASTER_SRC: // TODO: this needs to be done whenever target isnt important, doing it per case for safety
                     triggerTarget = nullptr;
                     break;
             }
@@ -1949,7 +1953,7 @@ void Aura::HandleAuraTransform(bool apply, bool Real)
             for (auto otherTransform : otherTransforms)
             {
                 // negative auras are preferred
-                if (!IsPositiveSpell(otherTransform->GetSpellProto()->Id, otherTransform->GetCaster(), target))
+                if (!otherTransform->IsPositive())
                 {
                     handledAura = otherTransform;
                     break;
@@ -2218,7 +2222,7 @@ void Aura::HandleModConfuse(bool apply, bool Real)
     if (!apply && GetTarget()->HasAuraType(SPELL_AURA_MOD_CONFUSE))
         return;
 
-    GetTarget()->SetConfused(apply, GetCasterGuid(), GetId());
+    GetTarget()->SetConfused(apply, GetCasterGuid(), GetId(), m_removeMode);
 }
 
 void Aura::HandleModFear(bool apply, bool Real)
