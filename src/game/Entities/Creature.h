@@ -575,7 +575,7 @@ class Creature : public Unit
 
         char const* GetSubName() const { return GetCreatureInfo()->SubName; }
 
-        void Update(uint32 update_diff, uint32 diff) override;  // overwrite Unit::Update
+        void Update(const uint32 diff) override;  // overwrite Unit::Update
 
         virtual void RegenerateAll(uint32 update_diff);
         uint32 GetEquipmentId() const { return m_equipmentId; }
@@ -660,9 +660,6 @@ class Creature : public Unit
 
         // TODO: Research mob shield block values
         uint32 GetShieldBlockValue() const override { return (getLevel() / 2 + uint32(GetStat(STAT_STRENGTH) / 20)); }
-
-        SpellSchoolMask GetMeleeDamageSchoolMask() const override { return m_meleeDamageSchoolMask; }
-        void SetMeleeDamageSchool(SpellSchools school) { m_meleeDamageSchoolMask = GetSchoolMask(school); }
 
         bool HasSpell(uint32 spellID) const override;
 
@@ -833,6 +830,15 @@ class Creature : public Unit
 
         bool CanAggro() const { return m_canAggro; }
         void SetCanAggro(bool canAggro) { m_canAggro = canAggro; }
+
+        void SetNoRewards() { m_noXP = true; m_noLoot = true; m_noReputation = true; }
+        bool IsNoXp() { return m_noXP; }
+        void SetNoXP(bool state) { m_noXP = state; }
+        bool IsNoLoot() { return m_noLoot; }
+        void SetNoLoot(bool state) { m_noLoot = state; }
+        bool IsNoReputation() { return m_noReputation; }
+        void SetNoReputation(bool state) { m_noReputation = state; }
+
     protected:
         bool MeetsSelectAttackingRequirement(Unit* pTarget, SpellEntry const* pSpellInfo, uint32 selectFlags, SelectAttackingTargetParams params) const;
 
@@ -872,16 +878,20 @@ class Creature : public Unit
         bool m_isDeadByDefault;
         uint32 m_temporaryFactionFlags;                     // used for real faction changes (not auras etc)
 
-        SpellSchoolMask m_meleeDamageSchoolMask;
         uint32 m_originalEntry;
 
         Position m_combatStartPos;                          // after combat contains last position
         Position m_respawnPos;
 
+        uint32 m_gameEventVendorId;                         // game event creature data vendor id override
+
         std::unique_ptr<UnitAI> m_ai;
         bool m_isInvisible;
         bool m_ignoreMMAP;
         bool m_forceAttackingCapability;                    // can attack even if not selectable/not attackable
+        bool m_noXP;
+        bool m_noLoot;
+        bool m_noReputation;
 
         void SetBaseWalkSpeed(float speed) override;
         void SetBaseRunSpeed(float speed) override;

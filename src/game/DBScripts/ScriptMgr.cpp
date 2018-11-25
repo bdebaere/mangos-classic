@@ -1782,11 +1782,19 @@ bool ScriptAction::HandleScriptStep()
             Creature* source = ((Creature*)pSource);
 
             // Consider add additional checks for cases where creature should not change movementType
-            // (pet? in combat? already using same MMgen as script try to apply?)
+            // (pet? already using same MMgen as script try to apply?)
+
+            if (source->isInCombat())
+            {
+                sLog.outDebug(" DB-SCRIPTS: Process table `%s` id %u, SCRIPT_COMMAND_MOVEMENT called for movement change to %u with source guid %s but source is in combat and may lead to wrong behaviour: skipping.", m_table, m_script->id, m_script->movement.movementType, pSource->GetGuidStr().c_str());
+                break;
+            }
 
             switch (m_script->movement.movementType)
             {
                 case IDLE_MOTION_TYPE:
+                    source->StopMoving();
+                    source->GetMotionMaster()->Clear(false, true);
                     source->GetMotionMaster()->MoveIdle();
                     break;
                 case RANDOM_MOTION_TYPE:
@@ -2150,16 +2158,9 @@ bool ScriptAction::HandleScriptStep()
                 if (pCSource->GetMotionMaster()->empty() || !pCSource->GetMotionMaster()->top()->GetResetPosition(*pCSource, x, y, z, o))
                     pCSource->GetRespawnCoord(x, y, z, &o);
                 pCSource->SetFacingTo(o);
-
-                if (m_script->data_flags & SCRIPT_FLAG_COMMAND_ADDITIONAL && !pCSource->isInCombat())
-                    pCSource->SetTarget(nullptr);
             }
             else
-            {
                 pCSource->SetFacingToObject(pTarget);
-                if (m_script->data_flags & SCRIPT_FLAG_COMMAND_ADDITIONAL && !LogIfNotUnit(pTarget) && !pCSource->isInCombat())
-                    pCSource->SetTarget(pTarget);
-            }
             break;
         }
         case SCRIPT_COMMAND_MOVE_DYNAMIC:                   // 37
@@ -2168,6 +2169,13 @@ bool ScriptAction::HandleScriptStep()
                 return false;
             if (LogIfNotUnit(pTarget))
                 return false;
+
+            Creature* source = ((Creature*)pSource);
+            if (source->isInCombat())
+            {
+                sLog.outDebug(" DB-SCRIPTS: Process table `%s` id %u, SCRIPT_COMMAND_MOVE_DYNAMIC called for source guid %s but source is in combat and may lead to wrong behaviour: skipping.", m_table, m_script->id, pSource->GetGuidStr().c_str());
+                break;
+            }
 
             float x, y, z;
             if (m_script->moveDynamic.maxDist == 0)         // Move to pTarget

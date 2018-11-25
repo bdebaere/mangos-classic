@@ -410,35 +410,53 @@ void AreaAura::Update(uint32 diff)
                 {
                     Group* pGroup = nullptr;
 
+                    // Handle aura party for players
                     if (owner->GetTypeId() == TYPEID_PLAYER)
+                    {
                         pGroup = ((Player*)owner)->GetGroup();
 
-                    if (pGroup)
-                    {
-                        uint8 subgroup = ((Player*)owner)->GetSubGroup();
-                        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+                        if (pGroup)
                         {
-                            Player* Target = itr->getSource();
-                            if (Target && Target->isAlive() && Target->GetSubGroup() == subgroup && caster->CanAssist(Target))
+                            uint8 subgroup = ((Player*)owner)->GetSubGroup();
+                            for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
                             {
-                                if (caster->IsWithinDistInMap(Target, m_radius))
-                                    targets.push_back(Target);
-                                Pet* pet = Target->GetPet();
-                                if (pet && pet->isAlive() && caster->IsWithinDistInMap(pet, m_radius))
-                                    targets.push_back(pet);
+                                Player* Target = itr->getSource();
+                                if (Target && Target->isAlive() && Target->GetSubGroup() == subgroup && caster->CanAssist(Target))
+                                {
+                                    if (caster->IsWithinDistInMap(Target, m_radius))
+                                        targets.push_back(Target);
+                                    Pet* pet = Target->GetPet();
+                                    if (pet && pet->isAlive() && caster->IsWithinDistInMap(pet, m_radius))
+                                        targets.push_back(pet);
+                                }
                             }
+                            break;
                         }
                     }
-                    else
+                    else    // handle aura party for creatures
                     {
-                        // add owner
-                        if (owner != caster && caster->IsWithinDistInMap(owner, m_radius))
-                            targets.push_back(owner);
-                        // add caster's pet
-                        Unit* pet = caster->GetPet();
-                        if (pet && caster->IsWithinDistInMap(pet, m_radius))
-                            targets.push_back(pet);
+                        // Get all creatures in spell radius
+                        std::list<Creature*> nearbyTargets;
+                        MaNGOS::AnyUnitInObjectRangeCheck u_check(owner, m_radius);
+                        MaNGOS::CreatureListSearcher<MaNGOS::AnyUnitInObjectRangeCheck> searcher(nearbyTargets, u_check);
+                        Cell::VisitGridObjects(owner, searcher, m_radius);
+
+                        for (auto target : nearbyTargets)
+                        {
+                            // Due to the lack of support for NPC groups or formations, are considered of the same party NPCs with same faction than caster
+                            if (target != owner && target->isAlive() && target->getFaction() == ((Creature*)owner)->getFaction())
+                                targets.push_back(target);
+                        }
                     }
+
+                    // add owner
+                    if (owner != caster && caster->IsWithinDistInMap(owner, m_radius))
+                        targets.push_back(owner);
+                    // add caster's pet
+                    Unit* pet = caster->GetPet();
+                    if (pet && caster->IsWithinDistInMap(pet, m_radius))
+                        targets.push_back(pet);
+
                     break;
                 }
                 case AREA_AURA_PET:
@@ -559,8 +577,11 @@ void AreaAura::Update(uint32 diff)
         }
         else if (m_areaAuraType == AREA_AURA_PARTY)         // check if in same sub group
         {
-            // not check group if target == owner or target == pet
-            if (caster->GetMasterGuid() != target->GetObjectGuid() && caster->GetObjectGuid() != target->GetMasterGuid())
+            // Do not check group if target == owner or target == pet
+            // or if caster is a not player (as NPCs do not support group so aura is only removed by moving out of range)
+            if (caster->GetMasterGuid() != target->GetObjectGuid()  &&
+                caster->GetObjectGuid() != target->GetMasterGuid()  &&
+                caster->GetTypeId() == TYPEID_PLAYER)
             {
                 Player* check = caster->GetBeneficiaryPlayer();
 
@@ -954,17 +975,20 @@ void Aura::TriggerSpell()
 //                }
 //                break;
 //            }
-//            case SPELLFAMILY_WARRIOR:
-//            {
-//                switch(auraId)
-//                {
-//                    // Wild Magic
-//                    case 23410: break;
-//                    default:
-//                        break;
-//                }
-//                break;
-//            }
+            case SPELLFAMILY_WARRIOR:
+            {
+                switch(auraId)
+                {
+                    case 23410:                             // Wild Magic (Mage class call in Nefarian encounter)
+                    {
+                        trigger_spell_id = 23603;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                break;
+            }
 //            case SPELLFAMILY_PRIEST:
 //            {
 //                switch(auraId)
@@ -1029,27 +1053,26 @@ void Aura::TriggerSpell()
     {
         // for channeled spell cast applied from aura owner to channel target (persistent aura affects already applied to true target)
         // come periodic casts applied to targets, so need select proper caster (ex. 15790)
-        if (IsChanneledSpell(GetSpellProto()) || GetSpellProto()->Effect[GetEffIndex()] == SPELL_EFFECT_PERSISTENT_AREA_AURA)
-        {
-            // interesting 2 cases: periodic aura at caster of channeled spell
-            if (target->GetObjectGuid() == casterGUID)
-                triggerCaster = target;
+        // interesting 2 cases: periodic aura at caster of channeled spell
+        if (target->GetObjectGuid() == casterGUID)
+            triggerCaster = target;
 
-            switch (triggeredSpellInfo->EffectImplicitTargetA[0])
-            {
-                case TARGET_UNIT_ENEMY:
-                case TARGET_UNIT:
-                    triggerCaster = GetCaster();
-                    triggerTarget = target;
-                    break;
-                case TARGET_UNIT_CASTER:
-                    triggerCaster = target;
-                    triggerTarget = target;
-                    break;
-                case TARGET_LOCATION_CASTER_SRC: // TODO: this needs to be done whenever target isnt important, doing it per case for safety
-                    triggerTarget = nullptr;
-                    break;
-            }
+        switch (triggeredSpellInfo->EffectImplicitTargetA[0])
+        {
+            case TARGET_UNIT_ENEMY:
+            case TARGET_UNIT:
+                triggerCaster = GetCaster();
+                triggerTarget = triggerCaster->GetTarget(); // This will default to channel target for channels
+                break;
+            case TARGET_UNIT_CASTER:
+                triggerCaster = target;
+                triggerTarget = target;
+                break;
+            case TARGET_LOCATION_CASTER_DEST:
+            case TARGET_LOCATION_CASTER_SRC: // TODO: this needs to be done whenever target isnt important, doing it per case for safety
+            default:
+                triggerTarget = nullptr;
+                break;
         }
 
         // Spell exist but require custom code
@@ -1250,6 +1273,19 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
 
                         if (Unit* caster = GetCaster())
                             caster->CastCustomSpell(target, 28836, &damage, nullptr, nullptr, TRIGGERED_OLD_TRIGGERED, nullptr, this);
+                        return;
+                    }
+                }
+                break;
+            }
+            case SPELLFAMILY_WARRIOR:
+            {
+                switch (GetId())
+                {
+                    case 23427:             // Summon Infernals (Warlock class call in Nefarian encounter)
+                    {
+                        if (Unit* target = GetTarget())
+                            target->CastSpell(target, 23426, TRIGGERED_OLD_TRIGGERED);
                         return;
                     }
                 }
@@ -1640,10 +1676,21 @@ void Aura::HandleAuraModShapeshift(bool apply, bool Real)
             modelid = 4613;
             break;
         case FORM_MOONKIN:
-            if (Player::TeamForRace(target->getRace()) == ALLIANCE)
-                modelid = 15374;
+            if (GetId() == 24809)       // Specific case for spell Spirit Shade Visual in Lethon encounter (spell use moonkin form value for some reason)
+            {
+                Unit* caster = GetCaster();
+                if (caster->GetTypeId() != TYPEID_PLAYER)
+                    return;
+
+                modelid = caster->GetNativeDisplayId();
+            }
             else
-                modelid = 15375;
+            {
+                if (Player::TeamForRace(target->getRace()) == ALLIANCE)
+                    modelid = 15374;
+                else
+                    modelid = 15375;
+            }
             break;
         case FORM_AMBIENT:
         case FORM_SHADOW:
@@ -2449,10 +2496,9 @@ void Aura::HandleInvisibility(bool apply, bool Real)
 {
     Unit* target = GetTarget();
 
+    target->SetInvisibilityMask(m_modifier.m_miscvalue, apply);
     if (apply)
     {
-        target->m_invisibilityMask |= (1 << m_modifier.m_miscvalue);
-
         target->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_IMMUNE_OR_LOST_SELECTION);
 
         if (Real && target->GetTypeId() == TYPEID_PLAYER)
@@ -2478,13 +2524,12 @@ void Aura::HandleInvisibility(bool apply, bool Real)
     else
     {
         // recalculate value at modifier remove (current aura already removed)
-        target->m_invisibilityMask = 0;
         Unit::AuraList const& auras = target->GetAurasByType(SPELL_AURA_MOD_INVISIBILITY);
-        for (auto aura : auras)
-            target->m_invisibilityMask |= (1 << aura->GetModifier()->m_miscvalue);
+        for (Aura* aura : auras)
+            target->SetInvisibilityMask(aura->GetModifier()->m_miscvalue, apply);
 
         // only at real aura remove and if not have different invisibility auras.
-        if (Real && target->m_invisibilityMask == 0)
+        if (Real && target->GetInvisibilityMask() == 0)
         {
             // remove glow vision
             if (target->GetTypeId() == TYPEID_PLAYER)
@@ -2505,17 +2550,12 @@ void Aura::HandleInvisibilityDetect(bool apply, bool Real)
 {
     Unit* target = GetTarget();
 
-    if (apply)
+    target->SetInvisibilityDetectMask(m_modifier.m_miscvalue, apply);
+    if (!apply)
     {
-        target->m_detectInvisibilityMask |= (1 << m_modifier.m_miscvalue);
-    }
-    else
-    {
-        // recalculate value at modifier remove (current aura already removed)
-        target->m_detectInvisibilityMask = 0;
         Unit::AuraList const& auras = target->GetAurasByType(SPELL_AURA_MOD_INVISIBILITY_DETECTION);
-        for (auto aura : auras)
-            target->m_detectInvisibilityMask |= (1 << aura->GetModifier()->m_miscvalue);
+        for (Aura* aura : auras)
+            target->SetInvisibilityDetectMask(aura->GetModifier()->m_miscvalue, true);
     }
     if (Real && target->GetTypeId() == TYPEID_PLAYER)
         ((Player*)target)->GetCamera().UpdateVisibilityForOwner();
@@ -3033,7 +3073,7 @@ void Aura::HandlePeriodicDamage(bool apply, bool Real)
             else
             {
                 WeaponAttackType attackType = GetWeaponAttackType(GetSpellProto());
-                m_modifier.m_amount = caster->MeleeDamageBonusDone(target, m_modifier.m_amount, attackType, GetSpellProto(), DOT, GetStackAmount());
+                m_modifier.m_amount = caster->MeleeDamageBonusDone(target, m_modifier.m_amount, attackType, GetSpellSchoolMask(spellProto), spellProto, DOT, GetStackAmount());
             }
         }
     }
@@ -4318,7 +4358,7 @@ void Aura::PeriodicTick()
             else
             {
                 WeaponAttackType attackType = GetWeaponAttackType(spellProto);
-                pdamage = target->MeleeDamageBonusTaken(pCaster, pdamage, attackType, spellProto, DOT, GetStackAmount());
+                pdamage = target->MeleeDamageBonusTaken(pCaster, pdamage, attackType, GetSpellSchoolMask(spellProto), spellProto, DOT, GetStackAmount());
             }
 
             // Curse of Agony damage-per-tick calculation

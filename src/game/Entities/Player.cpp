@@ -500,6 +500,9 @@ Player::Player(WorldSession* session): Unit(), m_taxiTracker(*this), m_mover(thi
 
     m_cannotBeDetectedTimer = 0;
     m_createdInstanceClearTimer = MINUTE * IN_MILLISECONDS;
+
+    //m_cinematicMgr = CinematicMgrUPtr(new CinematicMgr(this));
+    m_cinematicMgr = nullptr;
 }
 
 Player::~Player()
@@ -1080,12 +1083,12 @@ void Player::SetDrunkValue(uint16 newDrunkenValue, uint32 itemId)
 
     // special drunk invisibility detection
     if (newDrunkenState >= DRUNKEN_DRUNK)
-        m_detectInvisibilityMask |= (1 << 6);
+        SetInvisibilityDetectMask(6, true);
     else
-        m_detectInvisibilityMask &= ~(1 << 6);
+        SetInvisibilityDetectMask(6, false);
 }
 
-void Player::Update(uint32 update_diff, uint32 p_time)
+void Player::Update(const uint32 diff)
 {
     if (!IsInWorld())
         return;
@@ -1102,18 +1105,31 @@ void Player::Update(uint32 update_diff, uint32 p_time)
 
     // Update player only attacks
     if (uint32 ranged_att = getAttackTimer(RANGED_ATTACK))
-        setAttackTimer(RANGED_ATTACK, (update_diff >= ranged_att ? 0 : ranged_att - update_diff));
+        setAttackTimer(RANGED_ATTACK, (diff >= ranged_att ? 0 : ranged_att - diff));
+
+    // Update cinematic location
+    if (m_cinematicMgr)
+    {
+        m_cinematicMgr->m_cinematicDiff += diff;
+        // update only if CINEMATIC_UPDATEDIFF have passed
+        if (WorldTimer::getMSTimeDiff(m_cinematicMgr->m_lastCinematicCheck, WorldTimer::getMSTime()) > CINEMATIC_UPDATEDIFF)
+        {
+            m_cinematicMgr->m_lastCinematicCheck = WorldTimer::getMSTime();
+            if (!m_cinematicMgr->UpdateCinematicLocation(diff))
+                m_cinematicMgr.reset(nullptr);             // if any problem occur during cinematic update we can delete it
+        }
+    }
 
     // Used to implement delayed far teleports
     SetCanDelayTeleport(true);
-    Unit::Update(update_diff, p_time);
+    Unit::Update(diff);
     SetCanDelayTeleport(false);
 
     time_t now = time(nullptr);
 
-    UpdatePvPFlagTimer(update_diff);
+    UpdatePvPFlagTimer(diff);
 
-    UpdatePvPContestedFlagTimer(update_diff);
+    UpdatePvPContestedFlagTimer(diff);
 
     UpdateDuelFlag(now);
 
@@ -1129,7 +1145,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
         while (iter != m_timedquests.end())
         {
             QuestStatusData& q_status = mQuestStatus[*iter];
-            if (q_status.m_timer <= update_diff)
+            if (q_status.m_timer <= diff)
             {
                 uint32 quest_id  = *iter;
                 ++iter;                                     // Current iter will be removed in FailQuest
@@ -1137,7 +1153,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
             }
             else
             {
-                q_status.m_timer -= update_diff;
+                q_status.m_timer -= diff;
                 if (q_status.uState != QUEST_NEW) q_status.uState = QUEST_CHANGED;
                 ++iter;
             }
@@ -1175,31 +1191,31 @@ void Player::Update(uint32 update_diff, uint32 p_time)
 
     if (m_regenTimer)
     {
-        if (update_diff >= m_regenTimer)
+        if (diff >= m_regenTimer)
             m_regenTimer = 0;
         else
-            m_regenTimer -= update_diff;
+            m_regenTimer -= diff;
     }
 
     if (m_positionStatusUpdateTimer)
     {
-        if (update_diff >= m_positionStatusUpdateTimer)
+        if (diff >= m_positionStatusUpdateTimer)
             m_positionStatusUpdateTimer = 0;
         else
-            m_positionStatusUpdateTimer -= update_diff;
+            m_positionStatusUpdateTimer -= diff;
     }
 
     if (m_weaponChangeTimer > 0)
     {
-        if (update_diff >= m_weaponChangeTimer)
+        if (diff >= m_weaponChangeTimer)
             m_weaponChangeTimer = 0;
         else
-            m_weaponChangeTimer -= update_diff;
+            m_weaponChangeTimer -= diff;
     }
 
     if (m_zoneUpdateTimer > 0)
     {
-        if (update_diff >= m_zoneUpdateTimer)
+        if (diff >= m_zoneUpdateTimer)
         {
             uint32 newzone, newarea;
             GetZoneAndAreaId(newzone, newarea);
@@ -1216,11 +1232,11 @@ void Player::Update(uint32 update_diff, uint32 p_time)
             }
         }
         else
-            m_zoneUpdateTimer -= update_diff;
+            m_zoneUpdateTimer -= diff;
     }
 
     if (m_cannotBeDetectedTimer > 0)
-        m_cannotBeDetectedTimer -= update_diff;
+        m_cannotBeDetectedTimer -= diff;
 
     if (isAlive())
     {
@@ -1232,29 +1248,29 @@ void Player::Update(uint32 update_diff, uint32 p_time)
 
     if (m_nextSave > 0)
     {
-        if (update_diff >= m_nextSave)
+        if (diff >= m_nextSave)
         {
             // m_nextSave reseted in SaveToDB call
             SaveToDB();
             DETAIL_LOG("Player '%s' (GUID: %u) saved", GetName(), GetGUIDLow());
         }
         else
-            m_nextSave -= update_diff;
+            m_nextSave -= diff;
     }
 
     // Handle Water/drowning
-    HandleDrowning(update_diff);
+    HandleDrowning(diff);
 
     // Handle detect stealth players
     if (m_DetectInvTimer > 0)
     {
-        if (update_diff >= m_DetectInvTimer)
+        if (diff >= m_DetectInvTimer)
         {
             HandleStealthedUnitsDetection();
             m_DetectInvTimer = 3000;
         }
         else
-            m_DetectInvTimer -= update_diff;
+            m_DetectInvTimer -= diff;
     }
 
     // Played time
@@ -1268,7 +1284,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
 
     if (m_drunk)
     {
-        m_drunkTimer += update_diff;
+        m_drunkTimer += diff;
 
         if (m_drunkTimer > 10 * IN_MILLISECONDS)
             HandleSobering();
@@ -1277,26 +1293,26 @@ void Player::Update(uint32 update_diff, uint32 p_time)
     // Not auto-free ghost from body in instances
     if (m_deathTimer > 0  && !GetMap()->Instanceable())
     {
-        if (p_time >= m_deathTimer)
+        if (diff >= m_deathTimer)
         {
             m_deathTimer = 0;
             BuildPlayerRepop();
             RepopAtGraveyard();
         }
         else
-            m_deathTimer -= p_time;
+            m_deathTimer -= diff;
     }
 
-    UpdateEnchantTime(update_diff);
-    UpdateHomebindTime(update_diff);
+    UpdateEnchantTime(diff);
+    UpdateHomebindTime(diff);
 
-    if (m_createdInstanceClearTimer < update_diff)
+    if (m_createdInstanceClearTimer < diff)
     {
         m_createdInstanceClearTimer = MINUTE * IN_MILLISECONDS;
         UpdateNewInstanceIdTimers(std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now()));
     }
     else
-        m_createdInstanceClearTimer -= update_diff;
+        m_createdInstanceClearTimer -= diff;
 
     // Group update
     SendUpdateToOutOfRangeGroupMembers();
@@ -1310,9 +1326,9 @@ void Player::Update(uint32 update_diff, uint32 p_time)
 
 #ifdef BUILD_PLAYERBOT
     if (m_playerbotAI)
-        m_playerbotAI->UpdateAI(p_time);
+        m_playerbotAI->UpdateAI(diff);
     else if (m_playerbotMgr)
-        m_playerbotMgr->UpdateAI(p_time);
+        m_playerbotMgr->UpdateAI(diff);
 #endif
 }
 
@@ -2136,6 +2152,17 @@ void Player::SetGameMaster(bool on)
         UpdateArea(m_areaUpdateId);
     }
 
+    // update dead corpse sparkles
+    UnitList deadUnits;
+    MaNGOS::AnyDeadUnitCheck u_check(this);
+    MaNGOS::UnitListSearcher<MaNGOS::AnyDeadUnitCheck > searcher(deadUnits, u_check);
+    Cell::VisitAllObjects(this, searcher, GetMap()->GetVisibilityDistance());
+    for (auto deadUnit : deadUnits)
+    {
+        if (deadUnit->GetTypeId() == TYPEID_UNIT)
+            deadUnit->ForceValuesUpdateAtIndex(UNIT_DYNAMIC_FLAGS);
+    }
+
     m_camera.UpdateVisibilityForOwner();
     UpdateObjectVisibility();
     UpdateForQuestWorldObjects();
@@ -2222,7 +2249,7 @@ void Player::SendLogXPGain(uint32 GivenXP, Unit* victim, uint32 RestXP) const
     GetSession()->SendPacket(data);
 }
 
-void Player::GiveXP(uint32 xp, Unit* victim)
+void Player::GiveXP(uint32 xp, Creature* victim)
 {
     if (xp < 1)
         return;
@@ -2872,11 +2899,11 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
                 SpellEntry const* i_spellInfo = sSpellTemplate.LookupEntry<SpellEntry>(m_spell.first);
                 if (!i_spellInfo) continue;
 
-                if (sSpellMgr.IsRankSpellDueToSpell(spellInfo, m_spell.first))
+                if (sSpellMgr.IsSpellAnotherRankOfSpell(spell_id, m_spell.first))
                 {
                     if (playerSpell2.active)
                     {
-                        if (sSpellMgr.IsHighRankOfSpell(spell_id, m_spell.first))
+                        if (sSpellMgr.IsSpellHigherRankOfSpell(spell_id, m_spell.first))
                         {
                             if (IsInWorld())                // not send spell (re-/over-)learn packets at loading
                             {
@@ -2892,7 +2919,7 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
                                 playerSpell2.state = PLAYERSPELL_CHANGED;
                             superceded_old = true;          // new spell replace old in action bars and spell book.
                         }
-                        else if (sSpellMgr.IsHighRankOfSpell(m_spell.first, spell_id))
+                        else if (sSpellMgr.IsSpellHigherRankOfSpell(m_spell.first, spell_id))
                         {
                             if (IsInWorld())                // not send spell (re-/over-)learn packets at loading
                             {
@@ -5615,6 +5642,13 @@ void Player::SendCinematicStart(uint32 CinematicSequenceId)
     WorldPacket data(SMSG_TRIGGER_CINEMATIC, 4);
     data << uint32(CinematicSequenceId);
     SendDirectMessage(data);
+
+    if (CinematicSequencesEntry const* sequence = sCinematicSequencesStore.LookupEntry(CinematicSequenceId))
+    {
+        // we can start server side dynamic follow
+        m_cinematicMgr.reset(new CinematicMgr(this));
+        m_cinematicMgr->SetActiveCinematicCamera(sequence->cinematicCamera);
+    }
 }
 
 void Player::CheckAreaExploreAndOutdoor()
@@ -5821,19 +5855,19 @@ int32 Player::CalculateReputationGain(ReputationSource source, int32 rep, int32 
 }
 
 // Calculates how many reputation points player gains in victim's enemy factions
-void Player::RewardReputation(Unit* pVictim, float rate)
+void Player::RewardReputation(Creature* victim, float rate)
 {
-    if (!pVictim || pVictim->GetTypeId() == TYPEID_PLAYER)
+    if (victim->IsNoReputation())
         return;
 
-    ReputationOnKillEntry const* Rep = sObjectMgr.GetReputationOnKillEntry(((Creature*)pVictim)->GetEntry());
+    ReputationOnKillEntry const* Rep = sObjectMgr.GetReputationOnKillEntry(victim->GetCreatureInfo()->Entry);
 
     if (!Rep)
         return;
 
     if (Rep->repfaction1 && (!Rep->team_dependent || GetTeam() == ALLIANCE))
     {
-        int32 donerep1 = CalculateReputationGain(REPUTATION_SOURCE_KILL, Rep->repvalue1, Rep->repfaction1, pVictim->getLevel());
+        int32 donerep1 = CalculateReputationGain(REPUTATION_SOURCE_KILL, Rep->repvalue1, Rep->repfaction1, victim->getLevel());
         donerep1 = int32(donerep1 * rate);
         FactionEntry const* factionEntry1 = sFactionStore.LookupEntry(Rep->repfaction1);
         uint32 current_reputation_rank1 = GetReputationMgr().GetRank(factionEntry1);
@@ -5851,7 +5885,7 @@ void Player::RewardReputation(Unit* pVictim, float rate)
 
     if (Rep->repfaction2 && (!Rep->team_dependent || GetTeam() == HORDE))
     {
-        int32 donerep2 = CalculateReputationGain(REPUTATION_SOURCE_KILL, Rep->repvalue2, Rep->repfaction2, pVictim->getLevel());
+        int32 donerep2 = CalculateReputationGain(REPUTATION_SOURCE_KILL, Rep->repvalue2, Rep->repfaction2, victim->getLevel());
         donerep2 = int32(donerep2 * rate);
         FactionEntry const* factionEntry2 = sFactionStore.LookupEntry(Rep->repfaction2);
         uint32 current_reputation_rank2 = GetReputationMgr().GetRank(factionEntry2);
@@ -10985,10 +11019,13 @@ void Player::PrepareGossipMenu(WorldObject* pSource, uint32 menuId)
                         break;
                     }
 
-                    std::string reqQuestIds = botConfig.GetStringDefault("PlayerbotAI.BotguyQuests", "");
-                    uint32 cost = botConfig.GetIntDefault("PlayerbotAI.BotguyCost", 0);
-                    if ((reqQuestIds == "" || requiredQuests(reqQuestIds.c_str())) && !pCreature->isInnkeeper() && this->GetMoney() >= cost)
-                        pCreature->LoadBotMenu(this);
+                    int32 cost = botConfig.GetIntDefault("PlayerbotAI.BotguyCost", 0);
+                    if (cost >= 0)
+                    {
+                        std::string reqQuestIds = botConfig.GetStringDefault("PlayerbotAI.BotguyQuests", "");
+                        if ((reqQuestIds == "" || requiredQuests(reqQuestIds.c_str())) && !pCreature->isInnkeeper() && this->GetMoney() >= (uint32)cost)
+                            pCreature->LoadBotMenu(this);
+                    }
 #endif
                     hasMenuItem = false;
                     break;
@@ -11236,7 +11273,7 @@ void Player::OnGossipSelect(WorldObject* pSource, uint32 gossipListId)
             // DEBUG_LOG("GOSSIP_OPTION_BOT");
             PlayerTalkClass->CloseGossip();
             uint32 guidlo = PlayerTalkClass->GossipOptionSender(gossipListId);
-            uint32 cost = botConfig.GetIntDefault("PlayerbotAI.BotguyCost", 0);
+            int32 cost = botConfig.GetIntDefault("PlayerbotAI.BotguyCost", 0);
 
             if (!GetPlayerbotMgr())
                 SetPlayerbotMgr(new PlayerbotMgr(this));
@@ -16168,7 +16205,7 @@ void Player::HandleStealthedUnitsDetection()
             continue;
 
         bool hasAtClient = HaveAtClient((*i));
-        bool hasDetected = (*i)->isVisibleForOrDetect(this, viewPoint, true);
+        bool hasDetected = (*i)->IsVisibleForOrDetect(this, viewPoint, true);
 
         if (hasDetected)
         {
@@ -17485,7 +17522,7 @@ void Player::learnQuestRewardedSpells(Quest const* quest)
                     continue;
 
                 // now we have 2 specialization, learn possible only if found is lesser specialization rank
-                if (!sSpellMgr.IsHighRankOfSpell(learned_0, itr->first))
+                if (!sSpellMgr.IsSpellHigherRankOfSpell(learned_0, itr->first))
                     return;
             }
         }
@@ -17967,25 +18004,26 @@ bool Player::isHonorOrXPTarget(Unit* pVictim) const
 
 void Player::RewardSinglePlayerAtKill(Unit* pVictim)
 {
-    bool PvP = pVictim->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED);
-
-    uint32 xp = PvP ? 0 : MaNGOS::XP::Gain(this, pVictim);
-
     // honor can be in PvP and !PvP (racial leader) cases
     RewardHonor(pVictim, 1);
 
     // xp and reputation only in !PvP case
-    if (!PvP)
+    if (!pVictim->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED))
     {
-        RewardReputation(pVictim, 1);
-        GiveXP(xp, pVictim);
-
-        if (Pet* pet = GetPet())
-            pet->GivePetXP(xp);
-
-        // normal creature (not pet/etc) can be only in !PvP case
         if (pVictim->GetTypeId() == TYPEID_UNIT)
-            KilledMonster(((Creature*)pVictim)->GetCreatureInfo(), pVictim->GetObjectGuid());
+        {
+            Creature* creatureVictim = static_cast<Creature*>(pVictim);
+            RewardReputation(creatureVictim, 1);
+            uint32 xp = MaNGOS::XP::Gain(this, creatureVictim);
+            GiveXP(xp, creatureVictim);
+
+            if (Pet* pet = GetPet())
+                pet->GivePetXP(xp);
+
+            // normal creature (not pet/etc) can be only in !PvP case        
+            if (CreatureInfo const* normalInfo = creatureVictim->GetCreatureInfo())
+                KilledMonster(normalInfo, creatureVictim->GetObjectGuid());
+        }
     }
 }
 
@@ -19462,4 +19500,23 @@ void Player::SendPetBar()
         else
             CharmSpellInitialize();
     }
+}
+
+void Player::StartCinematic()
+{
+    // server sent cinematic start?
+    if (!m_cinematicMgr)
+        return;
+
+    m_cinematicMgr->BeginCinematic();
+}
+
+void Player::StopCinematic()
+{
+    // any cinematic started?
+    if (!m_cinematicMgr)
+        return;
+
+    m_cinematicMgr->EndCinematic();
+    m_cinematicMgr.reset(nullptr);
 }

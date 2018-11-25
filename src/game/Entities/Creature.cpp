@@ -137,10 +137,11 @@ Creature::Creature(CreatureSubtype subtype) : Unit(),
     m_respawnradius(5.0f), m_subtype(subtype), m_defaultMovementType(IDLE_MOTION_TYPE),
     m_equipmentId(0), m_AlreadyCallAssistance(false),
     m_AlreadySearchedAssistance(false), m_isDeadByDefault(false),
-    m_temporaryFactionFlags(TEMPFACTION_NONE), m_meleeDamageSchoolMask(SPELL_SCHOOL_MASK_NORMAL),
+    m_temporaryFactionFlags(TEMPFACTION_NONE),
     m_originalEntry(0), m_ai(nullptr),
     m_isInvisible(false), m_ignoreMMAP(false), m_forceAttackingCapability(false), m_ignoreRangedTargets(false), m_countSpawns(false),
-    m_creatureInfo(nullptr)
+    m_creatureInfo(nullptr),
+    m_noXP(false), m_noLoot(false), m_noReputation(false)
 {
     m_regenTimer = 200;
     m_valuesCount = UNIT_END;
@@ -366,6 +367,9 @@ bool Creature::InitEntry(uint32 Entry, Team team, CreatureData const* data /*=nu
     SetCanParry(!(cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_NO_PARRY));
     SetCanBlock(!(cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_NO_BLOCK));
     SetForceAttackingCapability((cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_FORCE_ATTACKING_CAPABILITY) != 0);
+    SetNoXP(cinfo->ExtraFlags & CREATURE_EXTRA_FLAG_NO_XP_AT_KILL);
+    SetNoLoot(false);
+    SetNoReputation(false);
 
     return true;
 }
@@ -511,7 +515,7 @@ uint32 Creature::ChooseDisplayId(const CreatureInfo* cinfo, const CreatureData* 
     return display_id;
 }
 
-void Creature::Update(uint32 update_diff, uint32 diff)
+void Creature::Update(const uint32 diff)
 {
     switch (m_deathState)
     {
@@ -571,17 +575,17 @@ void Creature::Update(uint32 update_diff, uint32 diff)
         }
         case CORPSE:
         {
-            Unit::Update(update_diff, diff);
+            Unit::Update(diff);
 
             if (loot)
                 loot->Update();
 
             if (!m_isDeadByDefault)
             {
-                if (m_corpseDecayTimer <= update_diff)
+                if (m_corpseDecayTimer <= diff)
                     RemoveCorpse();
                 else
-                    m_corpseDecayTimer -= update_diff;
+                    m_corpseDecayTimer -= diff;
             }
 
             break;
@@ -590,19 +594,20 @@ void Creature::Update(uint32 update_diff, uint32 diff)
         {
             if (m_isDeadByDefault)
             {
-                if (m_corpseDecayTimer <= update_diff)
+                if (m_corpseDecayTimer <= diff)
                 {
                     RemoveCorpse();
                     break;
                 }
-                m_corpseDecayTimer -= update_diff;
+                else
+                    m_corpseDecayTimer -= diff;
             }
 
-            Unit::Update(update_diff, diff);
+            Unit::Update(diff);
 
             // Creature can be dead after unit update
             if (isAlive())
-                RegenerateAll(update_diff);
+                RegenerateAll(diff);
 
             break;
         }
@@ -709,7 +714,7 @@ void Creature::RegenerateHealth()
     ModifyHealth(addvalue);
 }
 
-void Creature::DoFleeToGetAssistance()
+void Creature::DoFleeToGetAssistance() // TODO: split this into flee and assistance
 {
     if (!getVictim())
         return;
@@ -954,10 +959,15 @@ void Creature::PrepareBodyLootState()
     delete loot;
     loot = nullptr;
 
-    Player* killer = GetLootRecipient();
+    if (IsNoLoot())
+        SetLootStatus(CREATURE_LOOT_STATUS_LOOTED);
+    else
+    {
+        Player* killer = GetLootRecipient();
 
-    if (killer)
-        loot = new Loot(killer, this, LOOT_CORPSE);
+        if (killer)
+            loot = new Loot(killer, this, LOOT_CORPSE);
+    }
 
     if (m_lootStatus == CREATURE_LOOT_STATUS_LOOTED && !HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SKINNABLE))
     {

@@ -1189,20 +1189,32 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
             }
         }
 
-        // Failed hostile spell hits count as attack made against target (if detected)
         if (real_caster && real_caster != unit)
         {
-            if (!m_spellInfo->HasAttribute(SPELL_ATTR_EX3_NO_INITIAL_AGGRO) &&
-                    !m_spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT) &&
-                    !IsPositiveSpell(m_spellInfo->Id, real_caster, unit) &&
-                    m_caster->isVisibleForOrDetect(unit, unit, false))
-            {
-                if (!unit->isInCombat() && unit->GetTypeId() != TYPEID_PLAYER && ((Creature*)unit)->AI())
-                    ((Creature*)unit)->AI()->AttackedBy(real_caster);
+            const bool combat = (!m_spellInfo->HasAttribute(SPELL_ATTR_EX3_NO_INITIAL_AGGRO) && !m_spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT));
+            const bool touch = (m_spellInfo->HasAttribute(SPELL_ATTR_EX3_OUT_OF_COMBAT_ATTACK));
 
-                unit->AddThreat(real_caster);
-                unit->SetInCombatWithAggressor(real_caster);
-                real_caster->SetInCombatWithVictim(unit);
+            if (combat || touch)
+            {
+                // Failed hostile spell hits count as attack made against target (if detected)
+                if (const bool attack = (!IsPositiveSpell(m_spellInfo->Id, real_caster, unit) && m_caster->IsVisibleForOrDetect(unit, unit, false)))
+                {
+                    if (combat)
+                    {
+                        if (!unit->isInCombat() && unit->GetTypeId() != TYPEID_PLAYER && ((Creature*)unit)->AI())
+                            ((Creature*)unit)->AI()->AttackedBy(real_caster);
+
+                        unit->AddThreat(real_caster);
+                        unit->SetInCombatWithAggressor(real_caster);
+                        real_caster->SetInCombatWithVictim(unit);
+                    }
+
+                    if (touch)
+                    {
+                        unit->SetOutOfCombatWithAggressor(real_caster);
+                        real_caster->SetOutOfCombatWithVictim(unit);
+                    }
+                }
             }
         }
     }
@@ -1373,7 +1385,7 @@ void Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool isReflected)
         if (realCaster->CanAttack(unit))
         {
             // for delayed spells ignore not visible explicit target
-            if (unit == m_targets.getUnitTarget() && !unit->isVisibleForOrDetect(m_caster, m_caster, false))
+            if (unit == m_targets.getUnitTarget() && !unit->IsVisibleForOrDetect(m_caster, m_caster, false))
             {
                 // Workaround: do not send evade if caster/unit are dead to prevent combat log errors
                 // TODO: Visibility check clearly lackluster if we end up here like this, to be fixed later
@@ -1396,12 +1408,15 @@ void Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool isReflected)
     }
 
     // Get Data Needed for Diminishing Returns, some effects may have multiple auras, so this must be done on spell hit, not aura add
-    m_diminishGroup = GetDiminishingReturnsGroupForSpell(m_spellInfo, m_triggeredByAuraSpell != nullptr || (m_IsTriggeredSpell && m_CastItem));
-    m_diminishLevel = unit->GetDiminishing(m_diminishGroup);
-    // Increase Diminishing on unit, current informations for actually casts will use values above
-    if ((GetDiminishingReturnsGroupType(m_diminishGroup) == DRTYPE_PLAYER && unit->GetTypeId() == TYPEID_PLAYER) ||
+    if (m_caster->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED) || IsCreatureDRSpell(m_spellInfo))
+    {
+        m_diminishGroup = GetDiminishingReturnsGroupForSpell(m_spellInfo, m_triggeredByAuraSpell != nullptr || (m_IsTriggeredSpell && m_CastItem));
+        m_diminishLevel = unit->GetDiminishing(m_diminishGroup);
+        // Increase Diminishing on unit, current informations for actually casts will use values above
+        if ((GetDiminishingReturnsGroupType(m_diminishGroup) == DRTYPE_PLAYER && unit->GetTypeId() == TYPEID_PLAYER) ||
             GetDiminishingReturnsGroupType(m_diminishGroup) == DRTYPE_ALL)
-        unit->IncrDiminishing(m_diminishGroup);
+            unit->IncrDiminishing(m_diminishGroup);
+    }
 
     // Apply additional spell effects to target
     CastPreCastSpells(unit);
@@ -1911,7 +1926,7 @@ void Spell::SetTargetMap(SpellEffectIndex effIndex, uint32 targetMode, UnitList&
                         continue;
                     }
 
-					// TODO: Verify if cleave spells in vanilla required in-front-of check - TBC+ has attribute
+                    // TODO: Verify if cleave spells in vanilla required in-front-of check - TBC+ has attribute
 
                     ++activeUnit;
                 }
@@ -4329,10 +4344,26 @@ SpellCastResult Spell::CheckCast(bool strict)
             // warrior not have real combo-points at client side but use this way for mark allow Overpower use
             return m_caster->getClass() == CLASS_WARRIOR ? SPELL_FAILED_CASTER_AURASTATE : SPELL_FAILED_NO_COMBO_POINTS;
 
-        // Loatheb Corrupted Mind spell failed
+        // Loatheb Corrupted Mind and Nefarian class calls spell failed
         switch (m_spellInfo->SpellFamilyName)
         {
             case SPELLFAMILY_DRUID:
+            {
+                if (IsSpellHaveAura(m_spellInfo, SPELL_AURA_MOD_SHAPESHIFT))
+                {
+                    Unit::AuraList const& auraClassScripts = m_caster->GetAurasByType(SPELL_AURA_OVERRIDE_CLASS_SCRIPTS);
+                    for (Unit::AuraList::const_iterator itr = auraClassScripts.begin(); itr != auraClassScripts.end();)
+                    {
+                        if ((*itr)->GetModifier()->m_miscvalue == 3655)
+                        {
+                            return SPELL_FAILED_TARGET_AURASTATE;
+                        }
+                        else
+                            ++itr;
+                    }
+                }
+                // No break
+            }
             case SPELLFAMILY_PRIEST:
             case SPELLFAMILY_SHAMAN:
             case SPELLFAMILY_PALADIN:
@@ -4351,7 +4382,27 @@ SpellCastResult Spell::CheckCast(bool strict)
                             ++itr;
                     }
                 }
+                break;
             }
+            case SPELLFAMILY_WARRIOR:
+            {
+                if (IsSpellHaveAura(m_spellInfo, SPELL_AURA_MOD_SHAPESHIFT))
+                {
+                    Unit::AuraList const& auraClassScripts = m_caster->GetAurasByType(SPELL_AURA_OVERRIDE_CLASS_SCRIPTS);
+                    for (Unit::AuraList::const_iterator itr = auraClassScripts.begin(); itr != auraClassScripts.end();)
+                    {
+                        if ((*itr)->GetModifier()->m_miscvalue == 3654)
+                        {
+                            return SPELL_FAILED_TARGET_AURASTATE;
+                        }
+                        else
+                            ++itr;
+                    }
+                }
+                break;
+            }
+            default:
+                break;
         }
     }
 
@@ -4579,7 +4630,7 @@ SpellCastResult Spell::CheckCast(bool strict)
                     if (!own && sSpellMgr.IsNoStackSpellDueToSpell(m_spellInfo, entry))
                     {
                         if (IsSimilarExistingAuraStronger(m_caster, m_spellInfo->Id, existing) ||
-                            (sSpellMgr.IsRankSpellDueToSpell(m_spellInfo, entry->Id) && sSpellMgr.IsHighRankOfSpell(entry->Id, m_spellInfo->Id)))
+                            (sSpellMgr.IsSpellAnotherRankOfSpell(m_spellInfo->Id, entry->Id) && sSpellMgr.IsSpellHigherRankOfSpell(entry->Id, m_spellInfo->Id)))
                             return SPELL_FAILED_AURA_BOUNCED;
                     }
                 }

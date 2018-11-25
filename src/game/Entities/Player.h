@@ -40,6 +40,7 @@
 #include "Chat/Chat.h"
 #include "Server/SQLStorages.h"
 #include "Loot/LootMgr.h"
+#include "Cinematics/CinematicMgr.h"
 
 #include<vector>
 
@@ -836,6 +837,8 @@ class TradeData
 class Player : public Unit
 {
         friend class WorldSession;
+        friend class CinematicMgr;
+
         friend void Item::AddToUpdateQueueOf(Player* player);
         friend void Item::RemoveFromUpdateQueueOf(Player* player);
     public:
@@ -871,7 +874,7 @@ class Player : public Unit
 
         bool Create(uint32 guidlow, const std::string& name, uint8 race, uint8 class_, uint8 gender, uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 outfitId);
 
-        void Update(uint32 update_diff, uint32 p_time) override;
+        void Update(const uint32 diff) override;
 
         static bool BuildEnumData(QueryResult* result,  WorldPacket& p_data);
 
@@ -928,7 +931,7 @@ class Player : public Unit
         }
 
 
-        void GiveXP(uint32 xp, Unit* victim);
+        void GiveXP(uint32 xp, Creature* victim);
         void GiveLevel(uint32 level);
 
         void InitStatsForLevel(bool reapplyMods = false);
@@ -974,6 +977,8 @@ class Player : public Unit
         void Yell(const std::string& text, const uint32 language) const;
         void TextEmote(const std::string& text) const;
         void Whisper(const std::string& text, const uint32 language, ObjectGuid receiver);
+
+        CinematicMgr* GetCinematicMgr() const { return m_cinematicMgr.get(); }
 
         /*********************************************************/
         /***                    TAXI SYSTEM                    ***/
@@ -1513,6 +1518,8 @@ class Player : public Unit
 
         void UpdateClientAuras();
         void SendPetBar();
+        void StartCinematic();
+        void StopCinematic();
         bool UpdateSkill(uint32 skill_id, uint32 step);
         bool UpdateSkillPro(uint16 SkillId, int32 Chance, uint32 step);
 
@@ -1677,8 +1684,8 @@ class Player : public Unit
 
         ReputationMgr&       GetReputationMgr()       { return m_reputationMgr; }
         ReputationMgr const& GetReputationMgr() const { return m_reputationMgr; }
-        ReputationRank GetReputationRank(uint32 faction) const;
-        void RewardReputation(Unit* pVictim, float rate);
+        ReputationRank GetReputationRank(uint32 faction_id) const;
+        void RewardReputation(Creature* victim, float rate);
         void RewardReputation(Quest const* pQuest);
         int32 CalculateReputationGain(ReputationSource source, int32 rep, int32 faction, uint32 creatureOrQuestLevel = 0, bool noAuraBonus = false) const;
 
@@ -2319,6 +2326,8 @@ class Player : public Unit
         InventoryResult _CanStoreItem_InBag(uint8 bag, ItemPosCountVec& dest, ItemPrototype const* pProto, uint32& count, bool merge, bool non_specialized, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;
         InventoryResult _CanStoreItem_InInventorySlots(uint8 slot_begin, uint8 slot_end, ItemPosCountVec& dest, ItemPrototype const* pProto, uint32& count, bool merge, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;
         Item* _StoreItem(uint16 pos, Item* pItem, uint32 count, bool clone, bool update);
+
+        CinematicMgrUPtr m_cinematicMgr;
 
         void AdjustQuestReqItemCount(Quest const* pQuest, QuestStatusData& questStatusData);
 

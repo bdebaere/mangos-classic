@@ -290,6 +290,7 @@ class CooldownContainer
 struct Position
 {
     Position() : x(0.0f), y(0.0f), z(0.0f), o(0.0f) {}
+    Position(float _x, float _y, float _z, float _o) : x(_x), y(_y), z(_z), o(_o) {}
     float x, y, z, o;
 };
 
@@ -632,31 +633,9 @@ class WorldObject : public Object
         friend struct WorldObjectChangeAccumulator;
 
     public:
-
-        // class is used to manipulate with WorldUpdateCounter
-        // it is needed in order to get time diff between two object's Update() calls
-        class UpdateHelper
-        {
-            public:
-                explicit UpdateHelper(WorldObject* obj) : m_obj(obj) {}
-                ~UpdateHelper() { }
-
-                void Update(uint32 time_diff)
-                {
-                    m_obj->Update(m_obj->m_updateTracker.timeElapsed(), time_diff);
-                    m_obj->m_updateTracker.Reset();
-                }
-
-            private:
-                UpdateHelper(const UpdateHelper&);
-                UpdateHelper& operator=(const UpdateHelper&);
-
-                WorldObject* const m_obj;
-        };
-
         virtual ~WorldObject() {}
 
-        virtual void Update(uint32 /*update_diff*/, uint32 /*time_diff*/) {}
+        virtual void Update(const uint32 /*diff*/) {}
 
         void _Create(uint32 guidlow, HighGuid guidhigh);
 
@@ -844,7 +823,7 @@ class WorldObject : public Object
         void RemoveFromClientUpdateList() override;
         void BuildUpdateData(UpdateDataMapType&) override;
 
-        Creature* SummonCreature(uint32 id, float x, float y, float z, float ang, TempSpawnType spwtype, uint32 despwtime, bool asActiveObject = false, bool setRun = false, uint32 pathId = 0, uint32 faction = 0, bool spawnCounting = false);
+        Creature* SummonCreature(uint32 id, float x, float y, float z, float ang, TempSpawnType spwtype, uint32 despwtime, bool asActiveObject = false, bool setRun = false, uint32 pathId = 0, uint32 faction = 0, bool spawnCounting = false, bool forcedOnTop = false);
 
         bool isActiveObject() const { return m_isActiveObject || m_viewPoint.hasViewers(); }
         void SetActiveObjectState(bool active);
@@ -878,8 +857,8 @@ class WorldObject : public Object
 
         virtual void InspectingLoot() {}
 
-        virtual bool CanAttackSpell(Unit* target, SpellEntry const* spellInfo = nullptr, bool isAOE = false) const { return true; }
-        virtual bool CanAssistSpell(Unit* target, SpellEntry const* spellInfo = nullptr) const { return true; }
+        virtual bool CanAttackSpell(Unit const* target, SpellEntry const* spellInfo = nullptr, bool isAOE = false) const { return true; }
+        virtual bool CanAssistSpell(Unit const* target, SpellEntry const* spellInfo = nullptr) const { return true; }
 
     protected:
         explicit WorldObject();
@@ -910,7 +889,6 @@ class WorldObject : public Object
 
         Position m_position;
         ViewPoint m_viewPoint;
-        WorldUpdateCounter m_updateTracker;
         bool m_isActiveObject;
 };
 

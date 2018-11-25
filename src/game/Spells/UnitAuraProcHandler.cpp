@@ -1468,8 +1468,12 @@ SpellAuraProcResult Unit::HandleProcTriggerSpellAuraProc(ProcExecutionData& data
     // Quick check for target modes for procs: do not cast offensive procs on friendly targets and in reverse
     if (!(procEx & PROC_EX_REFLECT))
     {
-        if (IsPositiveSpellTargetMode(triggerEntry, this, target) != CanAssist(target))
-            return SPELL_AURA_PROC_FAILED;
+        // TODO: add neutral target handling, neutral targets should still be able to go through
+        if (!(this == target && IsOnlySelfTargeting(triggerEntry)))
+        {
+            if (IsPositiveSpellTargetMode(triggerEntry, this, target) != CanAssist(target))
+                return SPELL_AURA_PROC_FAILED;
+        }
     }
 
     if (basepoints[EFFECT_INDEX_0] || basepoints[EFFECT_INDEX_1] || basepoints[EFFECT_INDEX_2])
@@ -1539,6 +1543,15 @@ SpellAuraProcResult Unit::HandleOverrideClassScriptAuraProc(ProcExecutionData& d
             if (!procSpell || procSpell->SpellVisual != 259)
                 return SPELL_AURA_PROC_FAILED;
             triggered_spell_id = 12486;
+            break;
+        }
+        case 3656:                                          // Corrupted Healing (Priest class call in Nefarian encounter)
+        {
+            // Procced spell can only be triggered by direct heals
+            // Heal over time like Renew does not trigger it
+            // Check that only priest class can proc it is done on aura 23401 appliance
+            if (IsSpellHaveEffect(procSpell, SPELL_EFFECT_HEAL))
+                triggered_spell_id = 23402;
             break;
         }
         case 4086:                                          // Improved Mend Pet (Rank 1)

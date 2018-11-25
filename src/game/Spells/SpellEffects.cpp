@@ -1323,6 +1323,12 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
 
                     return;
                 }
+                case 23424:                  // Corrupted Totems (Shaman Nefarian class call)
+                {
+                    uint32 totemsSpellIds[] = { 23419, 23420, 23422, 23423 };   // Corrupted Fire Nova Totem / Corrupted Stoneskin Totem / Corrupted Healing Stream Totem (Rank 5) / Corrupted Windfury Totem
+                    m_caster->CastSpell(m_caster, totemsSpellIds[urand(0, 3)], TRIGGERED_OLD_TRIGGERED);
+                    return;
+                }
             }
 
             break;
@@ -1848,6 +1854,47 @@ void Spell::EffectApplyAura(SpellEffectIndex eff_idx)
 {
     if (!unitTarget)
         return;
+
+    // Hack for Nefarian class calls
+    // it is not possible to filter out targets based on their class from data in spells template
+    // so this is hardcoded for now
+    switch (m_spellInfo->Id)
+    {
+        case 23397:
+            if (unitTarget->getClass() != CLASS_WARRIOR)
+                return;
+            break;
+        case 23398:
+            if (unitTarget->getClass() != CLASS_DRUID)
+                return;
+            break;
+        case 23401:
+            if (unitTarget->getClass() != CLASS_PRIEST)
+                return;
+            break;
+        case 23410:
+            if (unitTarget->getClass() != CLASS_MAGE)
+                return;
+            break;
+        case 23414:
+            if (unitTarget->getClass() != CLASS_ROGUE)
+                return;
+            break;
+        case 23418:
+            if (unitTarget->getClass() != CLASS_PALADIN)
+                return;
+            break;
+        case 23425:
+            if (unitTarget->getClass() != CLASS_SHAMAN)
+                return;
+            break;
+        case 23427:
+            if (unitTarget->getClass() != CLASS_WARLOCK)
+                return;
+            break;
+        default:
+            break;
+    }
 
     // ghost spell check, allow apply any auras at player loading in ghost mode (will be cleanup after load)
     if ((!unitTarget->isAlive() && !(IsDeathOnlySpell(m_spellInfo) || IsDeathPersistentSpell(m_spellInfo))) &&
@@ -3047,6 +3094,8 @@ void Spell::EffectSummonGuardian(SpellEffectIndex eff_idx)
             return;
         }
 
+        spawnCreature->SetLoading(true);
+
         spawnCreature->SetRespawnCoord(pos);
 
         if (m_duration > 0)
@@ -3077,6 +3126,7 @@ void Spell::EffectSummonGuardian(SpellEffectIndex eff_idx)
         if (CharmInfo* charmInfo = spawnCreature->GetCharmInfo())
             charmInfo->SetPetNumber(pet_number, false);
 
+        spawnCreature->SetLoading(false);
         m_caster->AddGuardian(spawnCreature);
 
         spawnCreature->SetByteValue(UNIT_FIELD_BYTES_2, 1, UNIT_BYTE2_FLAG_SUPPORTABLE | UNIT_BYTE2_FLAG_UNK5);
@@ -3281,6 +3331,7 @@ void Spell::EffectTameCreature(SpellEffectIndex /*eff_idx*/)
         return;
     }
 
+    pet->SetLoading(true);
     pet->SetOwnerGuid(plr->GetObjectGuid());
     pet->setFaction(plr->getFaction());
     pet->SetUInt32Value(UNIT_CREATED_BY_SPELL, m_spellInfo->Id);
@@ -3333,6 +3384,7 @@ void Spell::EffectTameCreature(SpellEffectIndex /*eff_idx*/)
     plr->SetPet(pet);
 
     plr->PetSpellInitialize();
+    pet->SetLoading(false);
 
     pet->SavePetToDB(PET_SAVE_AS_CURRENT);
 }
@@ -3403,6 +3455,7 @@ void Spell::EffectSummonPet(SpellEffectIndex eff_idx)
         return;
     }
 
+    NewSummon->SetLoading(true);
     NewSummon->SetRespawnCoord(pos);
 
     // Level of pet summoned
@@ -3467,11 +3520,13 @@ void Spell::EffectSummonPet(SpellEffectIndex eff_idx)
 
         NewSummon->SavePetToDB(PET_SAVE_AS_CURRENT);
         ((Player*)m_caster)->PetSpellInitialize();
+        NewSummon->SetLoading(false);
     }
     else
     {
         NewSummon->SetFlag(UNIT_FIELD_FLAGS, cInfo->UnitFlags);
         NewSummon->SetUInt32Value(UNIT_NPC_FLAGS, cInfo->NpcFlags);
+        NewSummon->SetLoading(false);
 
         // Notify Summoner
         if (m_originalCaster && (m_originalCaster != m_caster) && (m_originalCaster->AI()))
@@ -3615,24 +3670,39 @@ void Spell::EffectWeaponDmg(SpellEffectIndex eff_idx)
     // non-weapon damage
     int32 bonus = spell_bonus + fixed_bonus;
 
-    // apply to non-weapon bonus weapon total pct effect, weapon total flat effect included in weapon damage
-    if (bonus)
+    bool addDamage = false; // hack in place until effect handler is split up
+    switch (m_spellInfo->DmgClass)
     {
-        UnitMods unitMod;
-        switch (m_attackType)
-        {
-            default:
-            case BASE_ATTACK:   unitMod = UNIT_MOD_DAMAGE_MAINHAND; break;
-            case OFF_ATTACK:    unitMod = UNIT_MOD_DAMAGE_OFFHAND;  break;
-            case RANGED_ATTACK: unitMod = UNIT_MOD_DAMAGE_RANGED;   break;
-        }
-
-        float weapon_total_pct  = m_caster->GetModifierValue(unitMod, TOTAL_PCT);
-        bonus = int32(bonus * weapon_total_pct);
+        case SPELL_DAMAGE_CLASS_MELEE:
+        case SPELL_DAMAGE_CLASS_RANGED: addDamage = true; break;
+        case SPELL_DAMAGE_CLASS_MAGIC: break; // TODO: Add behaviour for spell behaviour
+        case SPELL_DAMAGE_CLASS_NONE: break; // do nothing
     }
 
-    // + weapon damage with applied weapon% dmg to base weapon damage in call
-    bonus += int32(m_caster->CalculateDamage(m_attackType, normalized) * weaponDamagePercentMod);
+    if (m_spellInfo->Effect[eff_idx] == SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL)
+        addDamage = true;
+
+    if (addDamage)
+    {
+        // apply to non-weapon bonus weapon total pct effect, weapon total flat effect included in weapon damage
+        if (bonus)
+        {
+            UnitMods unitMod;
+            switch (m_attackType)
+            {
+                default:
+                case BASE_ATTACK:   unitMod = UNIT_MOD_DAMAGE_MAINHAND; break;
+                case OFF_ATTACK:    unitMod = UNIT_MOD_DAMAGE_OFFHAND;  break;
+                case RANGED_ATTACK: unitMod = UNIT_MOD_DAMAGE_RANGED;   break;
+            }
+
+            float weapon_total_pct = m_caster->GetModifierValue(unitMod, TOTAL_PCT);
+            bonus = int32(bonus * weapon_total_pct);
+        }
+
+        // + weapon damage with applied weapon% dmg to base weapon damage in call
+        bonus += int32(m_caster->CalculateDamage(m_attackType, normalized) * weaponDamagePercentMod);
+    }
 
     // total damage
     bonus = int32(bonus * totalDamagePercentMod);
@@ -5169,6 +5239,7 @@ void Spell::EffectSummonCritter(SpellEffectIndex eff_idx)
         return;
     }
 
+    critter->SetLoading(true);
     critter->SetRespawnCoord(pos);
 
     // critter->SetName("");                                // generated by client
@@ -5192,6 +5263,7 @@ void Spell::EffectSummonCritter(SpellEffectIndex eff_idx)
     // NOTE: All companions should have these (creatureinfo needs to be tuned accordingly before we can remove these two lines):
     critter->SetImmuneToNPC(true);
     critter->SetImmuneToPlayer(true);
+    critter->SetLoading(false);
 
     // NOTE: Do not set PvP flags (confirmed) for companions.
 
@@ -5340,6 +5412,10 @@ void Spell::EffectDurabilityDamage(SpellEffectIndex eff_idx)
 void Spell::EffectDurabilityDamagePCT(SpellEffectIndex eff_idx)
 {
     if (!unitTarget || unitTarget->GetTypeId() != TYPEID_PLAYER)
+        return;
+
+    // Exception for Nefarian hunter class call because the spell targets all players regardless of their classes
+    if (m_spellInfo->Id == 23436 && unitTarget->getClass() != CLASS_HUNTER)
         return;
 
     int32 slot = m_spellInfo->EffectMiscValue[eff_idx];
@@ -5528,30 +5604,43 @@ void Spell::EffectSkill(SpellEffectIndex /*eff_idx*/)
 
 void Spell::EffectSummonDemon(SpellEffectIndex eff_idx)
 {
+    // ToDo: research what effect Multiple value really does
+    //       it is only used by two spells that are triggered by parent spells
+    //       which pick every enemy around the original caster and force each target
+    //       to cast the summon demon spell
+
+    // Effect base points control how many demons are summoned
+    if (!m_currentBasePoints[eff_idx])
+        return;
+
     float x = m_targets.m_destX;
     float y = m_targets.m_destY;
     float z = m_targets.m_destZ;
 
-    Creature* Charmed = m_caster->SummonCreature(m_spellInfo->EffectMiscValue[eff_idx], x, y, z, m_caster->GetOrientation(), TEMPSPAWN_TIMED_OR_DEAD_DESPAWN, 3600000);
-    if (!Charmed)
-        return;
-
-    // might not always work correctly, maybe the creature that dies from CoD casts the effect on itself and is therefore the caster?
-    Charmed->SetLevel(m_caster->getLevel());
-
-    // TODO: Add damage/mana/hp according to level
-
-    switch (m_spellInfo->Id)
+    for (int i = 0; i < m_currentBasePoints[eff_idx]; i++)
     {
-        case 1122: // Warlock Infernal - requires custom code - generalized in WOTLK
+        Creature* Charmed = m_caster->SummonCreature(m_spellInfo->EffectMiscValue[eff_idx], x, y, z, m_caster->GetOrientation(), TEMPSPAWN_TIMED_OR_DEAD_DESPAWN, 3600000);
+
+        if (!Charmed)
+            return;
+
+        // might not always work correctly, maybe the creature that dies from CoD casts the effect on itself and is therefore the caster?
+        Charmed->SetLevel(m_caster->getLevel());
+
+        // TODO: Add damage/mana/hp according to level
+
+        switch (m_spellInfo->Id)
         {
-            Charmed->SelectLevel(m_caster->getLevel()); // needs to have casters level
-            // Enslave demon effect, without mana cost and cooldown
-            Charmed->CastSpell(Charmed, 22707, TRIGGERED_OLD_TRIGGERED);  // short root spell on infernal from sniffs
-            m_caster->CastSpell(Charmed, 20882, TRIGGERED_OLD_TRIGGERED);
-            Charmed->CastSpell(nullptr, 22699, TRIGGERED_NONE);  // Inferno effect
-            Charmed->CastSpell(x, y, z, 20310, TRIGGERED_NONE);  // Stun
-            break;
+            case 1122: // Warlock Infernal - requires custom code - generalized in WOTLK
+            {
+                Charmed->SelectLevel(m_caster->getLevel()); // needs to have casters level
+                // Enslave demon effect, without mana cost and cooldown
+                Charmed->CastSpell(Charmed, 22707, TRIGGERED_OLD_TRIGGERED);  // short root spell on infernal from sniffs
+                m_caster->CastSpell(Charmed, 20882, TRIGGERED_OLD_TRIGGERED);
+                Charmed->CastSpell(nullptr, 22699, TRIGGERED_NONE);  // Inferno effect
+                Charmed->CastSpell(x, y, z, 20310, TRIGGERED_NONE);  // Stun
+                break;
+            }
         }
     }
 }

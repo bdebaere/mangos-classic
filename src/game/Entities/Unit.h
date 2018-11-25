@@ -1196,7 +1196,7 @@ class Unit : public WorldObject
          */
         void ClearDiminishings() { m_Diminishing.clear(); }
 
-        void Update(uint32 update_diff, uint32 p_time) override;
+        void Update(const uint32 diff) override;
 
         /**
          * Updates the attack time for the given WeaponAttackType
@@ -1441,10 +1441,11 @@ class Unit : public WorldObject
         bool IsInParty(Unit const* other, bool UI = false) const { return IsInGroup(other, true, UI); }
 
         // extensions of CanAttack and CanAssist API needed serverside
-        virtual bool CanAttackSpell(Unit* target, SpellEntry const* spellInfo = nullptr, bool isAOE = false) const override;
-        virtual bool CanAssistSpell(Unit* target, SpellEntry const* spellInfo = nullptr) const override;
+        virtual bool CanAttackSpell(Unit const* target, SpellEntry const* spellInfo = nullptr, bool isAOE = false) const override;
+        virtual bool CanAssistSpell(Unit const* target, SpellEntry const* spellInfo = nullptr) const override;
 
-        virtual bool CanAttackOnSight(Unit* target); // Used in MoveInLineOfSight checks
+        bool CanAttackOnSight(Unit const* target) const; // Used in MoveInLineOfSight checks
+        bool CanAssistInCombatAgainst(Unit const* who, Unit const* enemy) const;
 
         // Serverside fog of war settings
         bool IsFogOfWarVisibleStealth(Unit const* other) const;
@@ -1481,6 +1482,8 @@ class Unit : public WorldObject
         void Unmount(bool from_aura = false);
 
         uint16 GetMaxSkillValueForLevel(Unit const* target = nullptr) const { return (target ? GetLevelForTarget(target) : getLevel()) * 5; }
+
+        void Suicide();
         void DealDamageMods(Unit* pVictim, uint32& damage, uint32* absorb, DamageEffectType damagetype, SpellEntry const* spellProto = nullptr);
         uint32 DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDamage, DamageEffectType damagetype, SpellSchoolMask damageSchoolMask, SpellEntry const* spellProto, bool durabilityLoss);
         int32 DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* spellProto, bool critical = false);
@@ -1636,9 +1639,12 @@ class Unit : public WorldObject
         void SetInCombatState(bool PvP, Unit* enemy = nullptr);
         void SetInDummyCombatState(bool state);
         void SetInCombatWith(Unit* enemy);
-        void SetInCombatWithAggressor(Unit* aggressor);
-        void SetInCombatWithAssisted(Unit* assisted);
-        void SetInCombatWithVictim(Unit* victim);
+        void SetInCombatWithAggressor(Unit* aggressor, bool touchOnly = false);
+        inline void SetOutOfCombatWithAggressor(Unit* aggressor) { SetInCombatWithAggressor(aggressor, true); }
+        void SetInCombatWithAssisted(Unit* assisted, bool touchOnly = false);
+        inline void SetOutOfCombatWithAssisted(Unit* assisted) { SetInCombatWithAssisted(assisted, true); }
+        void SetInCombatWithVictim(Unit* victim, bool touchOnly = false);
+        inline void SetOutOfCombatWithVictim(Unit* victim) { SetInCombatWithVictim(victim, true); }
         void ClearInCombat();
         uint32 GetCombatTimer() const { return m_CombatTimer; }
 
@@ -1913,8 +1919,6 @@ class Unit : public WorldObject
         void DecreaseCastCounter() { if (m_castCounter) --m_castCounter; }
 
         ObjectGuid m_ObjectSlotGuid[4];
-        uint32 m_detectInvisibilityMask;
-        uint32 m_invisibilityMask;
 
         ShapeshiftForm GetShapeshiftForm() const { return ShapeshiftForm(GetByteValue(UNIT_FIELD_BYTES_1, 2)); }
         void  SetShapeshiftForm(ShapeshiftForm form) { SetByteValue(UNIT_FIELD_BYTES_1, 2, form); }
@@ -1974,15 +1978,24 @@ class Unit : public WorldObject
         void SetBaseWeaponDamage(WeaponAttackType attType, WeaponDamageRange damageRange, float value, uint8 index = 0) { m_weaponDamage[attType][index].damage[damageRange] = value; }
         void SetWeaponDamageSchool(WeaponAttackType attType, SpellSchools school, uint8 index = 0) { m_weaponDamage[attType][index].school = school; }
 
+        SpellSchoolMask GetMeleeDamageSchoolMask(bool main, bool first = false) const;
+        SpellSchoolMask GetMeleeDamageSchoolMask() const { return SpellSchoolMask(GetMeleeDamageSchoolMask(true, true) | GetMeleeDamageSchoolMask(false, true)); }
+        void SetMeleeDamageSchool(bool main, SpellSchools school);
+        void SetMeleeDamageSchool(SpellSchools school) { SetMeleeDamageSchool(true, school); SetMeleeDamageSchool(false, school); }
+
         // Visibility system
         UnitVisibility GetVisibility() const { return m_Visibility; }
         void SetVisibility(UnitVisibility x);
         void UpdateVisibilityAndView() override;            // overwrite WorldObject::UpdateVisibilityAndView()
 
         // common function for visibility checks for player/creatures with detection code
-        bool isVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, bool detect, bool inVisibleList = false, bool is3dDistance = true) const;
+        bool IsVisibleForOrDetect(Unit const* u, WorldObject const* viewPoint, bool detect, bool inVisibleList = false, bool is3dDistance = true) const;
         float GetVisibleDistance(Unit const * target, bool alert = false) const;
-        bool canDetectInvisibilityOf(Unit const* u) const;
+        bool CanDetectInvisibilityOf(Unit const* u) const;
+        uint32 GetInvisibilityDetectMask() const;
+        void SetInvisibilityDetectMask(uint32 index, bool apply);
+        uint32 GetInvisibilityMask() const;
+        void SetInvisibilityMask(uint32 index, bool apply);
 
         // virtual functions for all world objects types
         bool isVisibleForInState(Player const* u, WorldObject const* viewPoint, bool inVisibleList) const override;
@@ -2004,7 +2017,6 @@ class Unit : public WorldObject
         bool IsOutOfThreatArea(Unit* victim) const;
         void TauntUpdate();
         void FixateTarget(Unit* taunter);
-        ObjectGuid GetFixateTargetGuid() const { return m_fixateTargetGuid; }
         ThreatManager& getThreatManager() { return GetCombatData()->threatManager; }
         ThreatManager const& getThreatManager() const { return const_cast<Unit*>(this)->GetCombatData()->threatManager; }
         void addHatedBy(HostileReference* pHostileReference) { GetCombatData()->hostileRefManager.insertFirst(pHostileReference); };
@@ -2081,8 +2093,8 @@ class Unit : public WorldObject
         int32 SpellBaseHealingBonusTaken(SpellSchoolMask schoolMask) const;
         uint32 SpellHealingBonusDone(Unit* pVictim, SpellEntry const* spellProto, int32 healamount, DamageEffectType damagetype, uint32 stack = 1);
         uint32 SpellHealingBonusTaken(Unit* pCaster, SpellEntry const* spellProto, int32 healamount, DamageEffectType damagetype, uint32 stack = 1);
-        uint32 MeleeDamageBonusDone(Unit* pVictim, uint32 pdamage, WeaponAttackType attType, SpellEntry const* spellProto = nullptr, DamageEffectType damagetype = DIRECT_DAMAGE, uint32 stack = 1, bool flat = true);
-        uint32 MeleeDamageBonusTaken(Unit* pCaster, uint32 pdamage, WeaponAttackType attType, SpellEntry const* spellProto = nullptr, DamageEffectType damagetype = DIRECT_DAMAGE, uint32 stack = 1, bool flat = true);
+        uint32 MeleeDamageBonusDone(Unit* pVictim, uint32 damage, WeaponAttackType attType, SpellSchoolMask schoolMask, SpellEntry const* spellProto = nullptr, DamageEffectType damagetype = DIRECT_DAMAGE, uint32 stack = 1, bool flat = true);
+        uint32 MeleeDamageBonusTaken(Unit* pCaster, uint32 pdamage, WeaponAttackType attType, SpellSchoolMask schoolMask, SpellEntry const* spellProto = nullptr, DamageEffectType damagetype = DIRECT_DAMAGE, uint32 stack = 1, bool flat = true);
 
         bool IsTriggeredAtSpellProcEvent(ProcExecutionData& data, SpellAuraHolder* holder, SpellProcEventEntry const*& spellProcEvent);
         // Aura proc handlers
@@ -2297,16 +2309,16 @@ class Unit : public WorldObject
 
         AuraList m_modAuras[TOTAL_AURAS];
         float m_auraModifiersGroup[UNIT_MOD_END][MODIFIER_TYPE_END];
+
         WeaponDamageInfo m_weaponDamage[MAX_ATTACK][MAX_ITEM_PROTO_DAMAGES];
         uint8 m_weaponDamageCount[MAX_ATTACK];
+
         bool m_canModifyStats;
         // std::list< spellEffectPair > AuraSpells[TOTAL_AURAS];  // TODO: use this if ok for mem
 
         float m_speed_rate[MAX_MOVE_TYPE];
 
         CharmInfo* m_charmInfo;
-
-        virtual SpellSchoolMask GetMeleeDamageSchoolMask() const;
 
         MotionMaster i_motionMaster;
 
@@ -2413,6 +2425,10 @@ class Unit : public WorldObject
 
         uint32 m_evadeTimer; // Used for evade during combat when mob is not running home and target isnt reachable
         bool m_evadeMode; // Used for evade during running home
+
+        // invisibility data
+        uint32 m_invisibilityMask;
+        uint32 m_detectInvisibilityMask; // is inherited from controller in PC case
 
     private:                                                // Error traps for some wrong args using
         // this will catch and prevent build for any cases when all optional args skipped and instead triggered used non boolean type

@@ -1311,7 +1311,7 @@ void WorldObject::GetRandomPoint(float x, float y, float z, float distance, floa
 
     MaNGOS::NormalizeMapCoord(rand_x);
     MaNGOS::NormalizeMapCoord(rand_y);
-    UpdateGroundPositionZ(rand_x, rand_y, rand_z);          // update to LOS height if available
+    UpdateAllowedPositionZ(rand_x, rand_y, rand_z);          // update to LOS height if available
 }
 
 void WorldObject::UpdateGroundPositionZ(float x, float y, float& z) const
@@ -1650,7 +1650,7 @@ void WorldObject::AddObjectToRemoveList()
     GetMap()->AddObjectToRemoveList(this);
 }
 
-Creature* WorldObject::SummonCreature(uint32 id, float x, float y, float z, float ang, TempSpawnType spwtype, uint32 despwtime, bool asActiveObject, bool setRun, uint32 pathId, uint32 faction, bool spawnCounting)
+Creature* WorldObject::SummonCreature(uint32 id, float x, float y, float z, float ang, TempSpawnType spwtype, uint32 despwtime, bool asActiveObject, bool setRun, uint32 pathId, uint32 faction, bool spawnCounting, bool forcedOnTop)
 {
     CreatureInfo const* cinfo = ObjectMgr::GetCreatureTemplate(id);
     if (!cinfo)
@@ -1668,7 +1668,10 @@ Creature* WorldObject::SummonCreature(uint32 id, float x, float y, float z, floa
     CreatureCreatePos pos(GetMap(), x, y, z, ang);
 
     if (x == 0.0f && y == 0.0f && z == 0.0f)
-        pos = CreatureCreatePos(this, GetOrientation(), CONTACT_DISTANCE, ang);
+    {
+        float dist = forcedOnTop ? 0.0f : CONTACT_DISTANCE;
+        pos = CreatureCreatePos(this, GetOrientation(), dist, ang);
+    }
 
     if (!pCreature->Create(GetMap()->GenerateLocalLowGuid(cinfo->GetHighGuid()), pos, cinfo, team))
     {
@@ -1821,13 +1824,13 @@ void WorldObject::GetNearPoint(WorldObject const* searcher, float& x, float& y, 
     // prepare selector for work
     ObjectPosSelector selector(GetPositionX(), GetPositionY(), distance2d, searcher_bounding_radius, searcher);
 
-    // adding used positions around object
-    {
-        MaNGOS::NearUsedPosDo u_do(*this, searcher, absAngle, selector);
-        MaNGOS::WorldObjectWorker<MaNGOS::NearUsedPosDo> worker(u_do);
+    // adding used positions around object - unused because its not blizzlike
+    //{
+    //    MaNGOS::NearUsedPosDo u_do(*this, searcher, absAngle, selector);
+    //    MaNGOS::WorldObjectWorker<MaNGOS::NearUsedPosDo> worker(u_do);
 
-        Cell::VisitAllObjects(this, worker, dist);
-    }
+    //    Cell::VisitAllObjects(this, worker, dist);
+    //}
 
     // maybe can just place in primary position
     if (selector.CheckOriginalAngle())
