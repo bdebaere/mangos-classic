@@ -5344,7 +5344,7 @@ void Unit::SendSpellOrDamageImmune(Unit* target, uint32 spellID) const
     SendMessageToSet(data, true);
 }
 
-void Unit::CasterHitTargetWithSpell(Unit* realCaster, Unit* target, SpellEntry const* spellInfo)
+void Unit::CasterHitTargetWithSpell(Unit* realCaster, Unit* target, SpellEntry const* spellInfo, bool success/* = true*/)
 {
     if (realCaster->CanAttack(target))
     {
@@ -5363,18 +5363,21 @@ void Unit::CasterHitTargetWithSpell(Unit* realCaster, Unit* target, SpellEntry c
             if (attack)
             {
                 // Since patch 1.5.0 sitting characters always stand up on attack (even if stunned)
-                if (!target->IsStandState() && target->GetTypeId() == TYPEID_PLAYER)
+                if (success && !target->IsStandState() && target->GetTypeId() == TYPEID_PLAYER)
                     target->SetStandState(UNIT_STAND_STATE_STAND);
 
                 if (!spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT))
                 {
-                    target->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_HITBYSPELL);
-                    // use speedup check to avoid re-remove after above lines - TODO: move to proc
-                    if (spellInfo->HasAttribute(SPELL_ATTR_EX_NOT_BREAK_STEALTH))
-                        target->RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
+                    if (success)
+                    {
+                        target->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_HITBYSPELL);
+                        // use speedup check to avoid re-remove after above lines - TODO: move to proc
+                        if (spellInfo->HasAttribute(SPELL_ATTR_EX_NOT_BREAK_STEALTH))
+                            target->RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
 
-                    // caster can be detected but have stealth aura
-                    RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
+                        // caster can be detected but have stealth aura
+                        RemoveSpellsCausingAura(SPELL_AURA_MOD_STEALTH);
+                    }
 
                     target->AddThreat(realCaster);
                     target->SetInCombatWithAggressor(realCaster);
@@ -5436,31 +5439,56 @@ void Unit::SendAttackStateUpdate(CalcDamageInfo* calcDamageInfo) const
 {
     DEBUG_FILTER_LOG(LOG_FILTER_COMBAT, "WORLD: Sending SMSG_ATTACKERSTATEUPDATE");
 
-    WorldPacket data(SMSG_ATTACKERSTATEUPDATE, (16 + 45));  // we guess size
+    WorldPacket data(SMSG_ATTACKERSTATEUPDATE, 16 + 45);        // we guess size
 
     data << uint32(calcDamageInfo->HitInfo);
-    data << GetPackGUID();
+    data << calcDamageInfo->attacker->GetPackGUID();
     data << calcDamageInfo->target->GetPackGUID();
-    data << uint32(calcDamageInfo->totalDamage);    // Total damage
+    data << uint32(calcDamageInfo->totalDamage);                // Total damage
 
-    data << uint8(m_weaponDamageCount[calcDamageInfo->attackType]);         // Sub damage count
+    // Subdamage count:
+    uint8 lines = m_weaponDamageCount[calcDamageInfo->attackType];
+    data << uint8(lines);
 
-    // Sub damage description
-    for (uint8 i = 0; i < m_weaponDamageCount[calcDamageInfo->attackType]; i++)
+    // Subdamage information:
+    for (uint8 i = 0; i < lines; ++i)
     {
-        SubDamageInfo* subDamage = &calcDamageInfo->subDamage[i];
+        auto &line = calcDamageInfo->subDamage[i];
 
-        data << uint32(GetFirstSchoolInMask(subDamage->damageSchoolMask));
-        data << float(subDamage->damage) / float(calcDamageInfo->totalDamage);       // Float coefficient of sub damage
-        data << uint32(subDamage->damage);
-        data << uint32(subDamage->absorb);
-        data << uint32(subDamage->resist);
+        data << uint32(GetFirstSchoolInMask(line.damageSchoolMask));
+        data << float(line.damage) / float(calcDamageInfo->totalDamage);   // Float coefficient of subdamage
+        data << uint32(line.damage);
+        data << uint32(line.absorb);
+        data << uint32(line.resist);
     }
-    data << uint32(calcDamageInfo->TargetState);
-    data << uint32(0);
+
+    data << uint8(calcDamageInfo->TargetState);
+    data << uint32(0);                                      // unknown, usually seen with -1, 0 and 1000
     data << uint32(0);                                      // spell id, seen with heroic strike and disarm as examples.
     // HITINFO_NOACTION normally set if spell
+
+    // Blocked amount:
     data << uint32(calcDamageInfo->blocked_amount);
+
+    // Debug info
+    if (calcDamageInfo->HitInfo & HITINFO_UNK0)
+    {
+        data << uint32(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        data << float(0);
+        for (uint8 i = 0; i < 5; ++i)
+        {
+            data << float(0);
+            data << float(0);
+        }
+        data << uint32(0);
+    }
 
     SendMessageToSet(data, true);
 }

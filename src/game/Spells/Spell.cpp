@@ -1189,34 +1189,9 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
             }
         }
 
+        // Failed hostile spell hits count as attack made against target (if detected)
         if (real_caster && real_caster != unit)
-        {
-            const bool combat = (!m_spellInfo->HasAttribute(SPELL_ATTR_EX3_NO_INITIAL_AGGRO) && !m_spellInfo->HasAttribute(SPELL_ATTR_EX_NO_THREAT));
-            const bool touch = (m_spellInfo->HasAttribute(SPELL_ATTR_EX3_OUT_OF_COMBAT_ATTACK));
-
-            if (combat || touch)
-            {
-                // Failed hostile spell hits count as attack made against target (if detected)
-                if (const bool attack = (!IsPositiveSpell(m_spellInfo->Id, real_caster, unit) && m_caster->IsVisibleForOrDetect(unit, unit, false)))
-                {
-                    if (combat)
-                    {
-                        if (!unit->isInCombat() && unit->GetTypeId() != TYPEID_PLAYER && ((Creature*)unit)->AI())
-                            ((Creature*)unit)->AI()->AttackedBy(real_caster);
-
-                        unit->AddThreat(real_caster);
-                        unit->SetInCombatWithAggressor(real_caster);
-                        real_caster->SetInCombatWithVictim(unit);
-                    }
-
-                    if (touch)
-                    {
-                        unit->SetOutOfCombatWithAggressor(real_caster);
-                        real_caster->SetOutOfCombatWithVictim(unit);
-                    }
-                }
-            }
-        }
+            m_caster->CasterHitTargetWithSpell(real_caster, unit, m_spellInfo, false);
     }
 
     // All calculated do it!
@@ -5020,14 +4995,19 @@ SpellCastResult Spell::CheckCast(bool strict)
             {
                 // Spell can be triggered, we need to check original caster prior to caster
                 Unit* caster = GetAffectiveCaster();
+                Unit* tameTarget;
+
+                bool gmmode = m_triggeredBySpellInfo == nullptr;
+                if (gmmode)
+                    tameTarget = caster->GetTarget();
+                else
+                    tameTarget = m_caster->GetChannelObject();
+
                 if (!caster || caster->GetTypeId() != TYPEID_PLAYER ||
-                        !m_targets.getUnitTarget() ||
-                        m_targets.getUnitTarget()->GetTypeId() == TYPEID_PLAYER)
+                        !tameTarget || tameTarget->GetTypeId() == TYPEID_PLAYER)
                     return SPELL_FAILED_BAD_TARGETS;
 
                 Player* plrCaster = (Player*)caster;
-
-                bool gmmode = m_triggeredBySpellInfo == nullptr;
 
                 if (gmmode && !ChatHandler(plrCaster).FindCommand("npc tame"))
                 {
@@ -5041,7 +5021,7 @@ SpellCastResult Spell::CheckCast(bool strict)
                     return SPELL_FAILED_DONT_REPORT;
                 }
 
-                Creature* target = (Creature*)m_targets.getUnitTarget();
+                Creature* target = (Creature*)tameTarget;
 
                 if (target->IsPet() || target->HasCharmer())
                 {
@@ -6547,6 +6527,44 @@ bool Spell::CheckTargetScript(Unit* target, SpellEffectIndex eff) const
 {
     switch (m_spellInfo->Id)
     {
+        // Exceptions for Nefarian class calls
+        // as it is not possible to filter out targets based on their class from data in spells template (like spell family masks for example)
+        case 23397:                                         // Berserk
+            if (target->getClass() != CLASS_WARRIOR)
+                return false;
+            break;
+        case 23398:                                         // Involuntary Transformation
+            if (target->getClass() != CLASS_DRUID)
+                return false;
+            break;
+        case 23401:                                         // Corrupted Healing
+            if (target->getClass() != CLASS_PRIEST)
+                return false;
+            break;
+        case 23410:                                         // Wild Magic
+            if (target->getClass() != CLASS_MAGE)
+                return false;
+            break;
+        case 23414:                                         // Paralyze
+            if (target->getClass() != CLASS_ROGUE)
+                return false;
+            break;
+        case 23418:                                         // Siphon Blessing
+            if (target->getClass() != CLASS_PALADIN)
+                return false;
+            break;
+        case 23425:                                         // Corrupted Totems
+            if (target->getClass() != CLASS_SHAMAN)
+                return false;
+            break;
+        case 23427:                                         // Summon Infernals
+            if (target->getClass() != CLASS_WARLOCK)
+                return false;
+            break;
+        case 23436:                                         // Corrupted Weapon
+            if (target->getClass() != CLASS_HUNTER)
+                return false;
+            break;
         case 25676:                                         // Drain Mana
         case 25754:
         case 26457:
