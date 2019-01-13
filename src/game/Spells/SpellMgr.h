@@ -150,6 +150,7 @@ inline bool IsDestinationOnlyEffect(SpellEntry const* spellInfo, SpellEffectInde
         case SPELL_EFFECT_PERSISTENT_AREA_AURA:
         case SPELL_EFFECT_TRANS_DOOR:
         case SPELL_EFFECT_SUMMON:
+        case SPELL_EFFECT_SUMMON_WILD:
         case SPELL_EFFECT_SUMMON_DEAD_PET:
         case SPELL_EFFECT_SUMMON_OBJECT_SLOT1:
         case SPELL_EFFECT_SUMMON_OBJECT_SLOT2:
@@ -214,6 +215,19 @@ inline bool IsSpellLastAuraEffect(SpellEntry const* spellInfo, SpellEffectIndex 
         if (spellInfo->EffectApplyAuraName[i])
             return false;
     return true;
+}
+
+inline bool IsAuraRemoveOnStacking(SpellEntry const* spellInfo, int32 effIdx) // TODO: extend to all effects
+{
+    switch (spellInfo->EffectApplyAuraName[effIdx])
+    {
+        case SPELL_AURA_MOD_INCREASE_ENERGY:
+        case SPELL_AURA_MOD_POWER_COST_SCHOOL_PCT:
+        case SPELL_AURA_MOD_INCREASE_HEALTH:
+            return false;
+        default:
+            return true;
+    }
 }
 
 inline bool IsAllowingDeadTarget(SpellEntry const* spellInfo)
@@ -328,6 +342,18 @@ inline bool IsAutocastable(uint32 spellId)
     return IsAutocastable(spellInfo);
 }
 
+// TODO: Unify with creature_template_spells so that we can set both attack and pet bar visibility
+// If true, only gives access to spellbar, and not states and commands
+// Works in connection with AI-CanHandleCharm
+inline bool IsPossessCharmType(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case 999999: // compilation warning suppression
+        default: return false;
+    }
+}
+
 inline bool IsDeathOnlySpell(SpellEntry const* spellInfo)
 {
     return spellInfo->HasAttribute(SPELL_ATTR_EX3_CAST_ON_DEAD) || spellInfo->Id == 2584;
@@ -363,8 +389,11 @@ inline bool IsSpellRemovedOnEvade(SpellEntry const* spellInfo)
 
     switch (spellInfo->Id)
     {
-        case 22856:         // Ice Lock (Guard Slip'kik ice trap in Dire Maul)
+        case 9460:          // Corrosive Ooze
+        case 17327:         // Spirit Particles
         case 22735:         // Spirit of Runn Tum
+        case 22856:         // Ice Lock (Guard Slip'kik ice trap in Dire Maul)
+        case 28126:         // Spirit Particles (purple)
             return false;
         default:
             return true;
@@ -739,6 +768,10 @@ inline bool IsPositiveEffectTargetMode(const SpellEntry* entry, SpellEffectIndex
     if (!entry)
         return false;
 
+    // Forces positive targets to be negative TODO: Find out if this is true for neutral targets
+    if (entry->HasAttribute(SPELL_ATTR_AURA_IS_DEBUFF))
+        return false;
+
     // Triggered spells case: prefer child spell via IsPositiveSpell()-like scan for triggered spell
     if (IsSpellEffectTriggerSpell(entry, effIndex))
     {
@@ -841,7 +874,8 @@ inline bool IsPositiveEffect(const SpellEntry* spellproto, SpellEffectIndex effI
 
 inline bool IsPositiveAuraEffect(const SpellEntry* entry, SpellEffectIndex effIndex, const WorldObject* caster = nullptr, const WorldObject* target = nullptr)
 {
-    return (IsAuraApplyEffect(entry, effIndex) && IsPositiveEffect(entry, effIndex, caster, target));
+    return IsAuraApplyEffect(entry, effIndex) && !IsEffectTargetNegative(entry->EffectImplicitTargetA[effIndex], entry->EffectImplicitTargetB[effIndex])
+        && !entry->HasAttribute(SPELL_ATTR_AURA_IS_DEBUFF);
 }
 
 inline bool IsPositiveSpellTargetModeForSpecificTarget(const SpellEntry* entry, uint8 effectMask, const WorldObject* caster = nullptr, const WorldObject* target = nullptr)
@@ -1088,7 +1122,7 @@ inline bool IsIgnoreLosSpellEffect(SpellEntry const* spellInfo, SpellEffectIndex
         default: break;
     }
 
-    return spellInfo->EffectRadiusIndex[effIdx] == 13 || IsIgnoreLosSpell(spellInfo);
+    return spellInfo->EffectRadiusIndex[effIdx] == 28 || IsIgnoreLosSpell(spellInfo);
 }
 
 inline bool IsIgnoreLosSpellCast(SpellEntry const* spellInfo)
@@ -1453,16 +1487,6 @@ inline bool IsStackableAuraEffect(SpellEntry const* entry, SpellEntry const* ent
                 break;
             nonmui = true;
             break;
-        case SPELL_AURA_MOD_FEAR: // Fear/confuse effects: do not stack with the same mechanic type
-        case SPELL_AURA_MOD_CONFUSE:
-            return (entry->Mechanic != entry2->Mechanic);
-            break;
-        case SPELL_AURA_MOD_STUN: // Stun/root effects: prefer refreshing (overwrite) existing types if possible
-        case SPELL_AURA_MOD_ROOT:
-            if (entry->Mechanic != entry2->Mechanic)
-                return true;
-            nonmui = true;
-            break;
         case SPELL_AURA_MOD_RATING: // Whitelisted, Rejuvenation has this
         case SPELL_AURA_MOD_SPELL_CRIT_CHANCE: // Party auras whitelist for Totem of Wrath
         case SPELL_AURA_MOD_SPELL_HIT_CHANCE: // Party auras whitelist for Totem of Wrath
@@ -1743,6 +1767,12 @@ struct SpellTargetPosition
     float  target_Y;
     float  target_Z;
     float  target_Orientation;
+};
+
+struct SpellCone
+{
+    uint32 spellId;
+    int32 coneAngle;
 };
 
 typedef std::unordered_map<uint32, SpellTargetPosition> SpellTargetPositionMap;
@@ -2312,10 +2342,19 @@ class SpellMgr
 
             return false;
         }
-        bool canStackSpellRanksInSpellBook(SpellEntry const* spellInfo) const;
-        bool IsRankedSpellNonStackableInSpellBook(SpellEntry const* spellInfo) const
+
+        uint32 GetSpellBookSuccessorSpellId(uint32 spellId)
         {
-            return !canStackSpellRanksInSpellBook(spellInfo) && GetSpellRank(spellInfo->Id) != 0;
+            SkillLineAbilityMapBounds bounds = GetSkillLineAbilityMapBoundsBySpellId(spellId);
+            for (SkillLineAbilityMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+            {
+                if (SkillLineAbilityEntry const* pAbility = itr->second)
+                {
+                    if (pAbility->forward_spellid)
+                        return pAbility->forward_spellid;
+                }
+            }
+            return 0;
         }
 
         // return true if spell1 can affect spell2
@@ -2361,9 +2400,14 @@ class SpellMgr
         // Spell correctness for client using
         static bool IsSpellValid(SpellEntry const* spellInfo, Player* pl = nullptr, bool msg = true);
 
-        SkillLineAbilityMapBounds GetSkillLineAbilityMapBounds(uint32 spell_id) const
+        SkillLineAbilityMapBounds GetSkillLineAbilityMapBoundsBySpellId(uint32 spellId) const
         {
-            return mSkillLineAbilityMap.equal_range(spell_id);
+            return mSkillLineAbilityMapBySpellId.equal_range(spellId);
+        }
+
+        SkillLineAbilityMapBounds GetSkillLineAbilityMapBoundsBySkillId(uint32 skillId) const
+        {
+            return mSkillLineAbilityMapBySkillId.equal_range(skillId);
         }
 
         SkillRaceClassInfoMapBounds GetSkillRaceClassInfoMapBounds(uint32 skill_id) const
@@ -2415,7 +2459,7 @@ class SpellMgr
         void LoadSpellBonuses();
         void LoadSpellTargetPositions();
         void LoadSpellThreats();
-        void LoadSkillLineAbilityMap();
+        void LoadSkillLineAbilityMaps();
         void LoadSkillRaceClassInfoMap();
         void LoadSpellPetAuras();
         void LoadSpellAreas();
@@ -2433,7 +2477,8 @@ class SpellMgr
         SpellProcEventMap  mSpellProcEventMap;
         SpellProcItemEnchantMap mSpellProcItemEnchantMap;
         SpellBonusMap      mSpellBonusMap;
-        SkillLineAbilityMap mSkillLineAbilityMap;
+        SkillLineAbilityMap mSkillLineAbilityMapBySpellId;
+        SkillLineAbilityMap mSkillLineAbilityMapBySkillId;
         SkillRaceClassInfoMap mSkillRaceClassInfoMap;
         SpellPetAuraMap     mSpellPetAuraMap;
         SpellAreaMap         mSpellAreaMap;
