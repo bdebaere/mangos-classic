@@ -1744,6 +1744,13 @@ void Spell::EffectTriggerSpell(SpellEffectIndex eff_idx)
         }
     }
 
+    switch (triggered_spell_id) // custom targeting cases - for now classic only
+    {
+        case 6608: // Lash
+            caster = unitTarget;
+            break;
+    }
+
     SpellCastTargets targets;
 
     switch (m_spellInfo->EffectImplicitTargetA[eff_idx])
@@ -3180,12 +3187,10 @@ void Spell::EffectLearnSkill(SpellEffectIndex eff_idx)
 
     uint16 skillid =  uint16(m_spellInfo->EffectMiscValue[eff_idx]);
     uint16 step = uint16(damage);
-    uint16 current = std::max(uint16(1), target->GetSkillValuePure(skillid));
-    uint16 max = (step * 75);
-    target->SetSkill(skillid, current, max, step);
+    target->SetSkillStep(skillid, step);
 
     if (WorldObject const* caster = GetCastingObject())
-        DEBUG_LOG("Spell: %s has learned skill %u (to maxlevel %u) from %s", target->GetGuidStr().c_str(), skillid, max, caster->GetGuidStr().c_str());
+        DEBUG_LOG("Spell: %s has learned skill %u (to step %u) from %s", target->GetGuidStr().c_str(), skillid, step, caster->GetGuidStr().c_str());
 }
 
 void Spell::EffectAddHonor(SpellEffectIndex /*eff_idx*/)
@@ -5323,6 +5328,9 @@ void Spell::EffectPlayerPull(SpellEffectIndex eff_idx)
     float dist = unitTarget->GetDistance(m_caster, false);
     if (damage && dist > damage)
         dist = float(damage);
+
+    if (dist < 0.1f)
+        return;
 
     // Projectile motion
     float speedXY = float(m_spellInfo->EffectMiscValue[eff_idx]) * 0.1f;
