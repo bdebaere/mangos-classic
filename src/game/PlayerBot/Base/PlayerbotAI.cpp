@@ -76,10 +76,10 @@ class PlayerbotChatHandler : protected ChatHandler
 PlayerbotAI::PlayerbotAI(PlayerbotMgr* const mgr, Player* const bot) :
     m_mgr(mgr), m_bot(bot), m_classAI(0), m_ignoreAIUpdatesUntilTime(CurrentTime()),
     m_combatOrder(ORDERS_NONE), m_ScenarioType(SCENARIO_PVE),
-    m_TimeDoneEating(0), m_TimeDoneDrinking(0),
     m_CurrentlyCastingSpellId(0), m_spellIdCommand(0),
     m_targetGuidCommand(ObjectGuid()),
-    m_taxiMaster(ObjectGuid())
+    m_taxiMaster(ObjectGuid()),
+    m_ignoreNeutralizeEffect(false)
 {
     // set bot state and needed item list
     m_botState = BOTSTATE_LOADING;
@@ -758,17 +758,21 @@ void PlayerbotAI::SendOrders(Player& /*player*/)
 
     if (!m_combatOrder)
         out << "Got no combat orders!";
-    else if (m_combatOrder & ORDERS_TANK || m_combatOrder & ORDERS_MAIN_TANK)
+    else if (m_combatOrder & ORDERS_MAIN_TANK)
+        out << "I'm a MAIN TANK";
+    else if (m_combatOrder & ORDERS_TANK)
         out << "I TANK";
     else if (m_combatOrder & ORDERS_ASSIST)
         out << "I ASSIST " << (m_targetAssist ? m_targetAssist->GetName() : "unknown");
-    else if (m_combatOrder & ORDERS_HEAL || m_combatOrder & ORDERS_MAIN_HEAL)
-        out << "I HEAL and DISPEL";
-    else if (m_combatOrder & ORDERS_NODISPEL)
-        out << "I HEAL and WON'T DISPEL";
+    else if (m_combatOrder & ORDERS_MAIN_HEAL)
+        out << "I'm a MAIN HEALER";
+    else if (m_combatOrder & ORDERS_HEAL)
+        out << "I HEAL";
+    else if (m_combatOrder & ORDERS_NOT_MAIN_HEAL)
+        out << "I HEAL but will ignore any main tank";
     else if (m_combatOrder & ORDERS_PASSIVE)
         out << "I'm PASSIVE";
-    if ((m_combatOrder & ORDERS_PRIMARY) && (m_combatOrder & (ORDERS_PROTECT | ORDERS_RESIST)))
+    if ((m_combatOrder & ORDERS_PRIMARY) && (m_combatOrder & (ORDERS_PROTECT | ORDERS_RESIST | ORDERS_NODISPEL)))
     {
         out << " and ";
         if (m_combatOrder & ORDERS_PROTECT)
@@ -784,6 +788,8 @@ void PlayerbotAI::SendOrders(Player& /*player*/)
             if (m_combatOrder & ORDERS_RESIST_SHADOW)
                 out << "I RESIST SHADOW";
         }
+        if (m_combatOrder & ORDERS_NODISPEL)
+            out << "I WON'T DISPEL";
     }
     out << ".";
 
@@ -1756,19 +1762,6 @@ uint8 PlayerbotAI::GetManaPercent() const
     return GetManaPercent(*m_bot);
 }
 
-uint8 PlayerbotAI::GetBaseManaPercent(const Unit& target) const
-{
-    if (target.GetPower(POWER_MANA) >= target.GetCreateMana())
-        return (100);
-    else
-        return (static_cast<float>(target.GetPower(POWER_MANA)) / target.GetCreateMana()) * 100;
-}
-
-uint8 PlayerbotAI::GetBaseManaPercent() const
-{
-    return GetBaseManaPercent(*m_bot);
-}
-
 uint8 PlayerbotAI::GetRageAmount(const Unit& target) const
 {
     return (static_cast<float>(target.GetPower(POWER_RAGE)));
@@ -2247,59 +2240,86 @@ void PlayerbotAI::Attack(Unit* forcedTarget)
 
 // intelligently sets a reasonable combat order for this bot
 // based on its class / level / etc
+// Function will try to avoid returning crowd controlled (neutralised) unit
+// unless told so by using forcedTarget parameter
 void PlayerbotAI::GetCombatTarget(Unit* forcedTarget)
 {
     // update attacker info now
     UpdateAttackerInfo();
 
+    Unit* candidateTarget;
+
     // check for attackers on protected unit, and make it a forcedTarget if any
     if (!forcedTarget && (m_combatOrder & ORDERS_PROTECT) && m_targetProtect)
     {
-        Unit* newTarget = FindAttacker((ATTACKERINFOTYPE)(AIT_VICTIMNOTSELF | AIT_HIGHESTTHREAT), m_targetProtect);
-        if (newTarget && newTarget != m_targetCombat)
+        candidateTarget = FindAttacker((ATTACKERINFOTYPE)(AIT_VICTIMNOTSELF | AIT_HIGHESTTHREAT), m_targetProtect);
+        if (candidateTarget && candidateTarget != m_targetCombat && !IsNeutralized(candidateTarget))
         {
-            forcedTarget = newTarget;
+            forcedTarget = candidateTarget;
             m_targetType = TARGET_THREATEN;
             if (m_mgr->m_confDebugWhisper)
                 TellMaster("Changing target to %s to protect %s", forcedTarget->GetName(), m_targetProtect->GetName());
         }
     }
-    else if (forcedTarget)
-    {
-        if (m_mgr->m_confDebugWhisper)
-            TellMaster("Changing target to %s by force!", forcedTarget->GetName());
-        m_targetType = (m_combatOrder & ORDERS_TANK || m_combatOrder & ORDERS_MAIN_TANK ? TARGET_THREATEN : TARGET_NORMAL);
-    }
-
-    // we already have a target and we are not forced to change it
-    if (m_targetCombat && !forcedTarget)
-        return;
-
-    // forced to change target to current target == null operation
-    if (forcedTarget && forcedTarget == m_targetCombat)
-        return;
 
     // are we forced on a target?
     if (forcedTarget)
     {
+        // forced to change target to current target == null operation
+        if (forcedTarget && forcedTarget == m_targetCombat)
+            return;
+
+        if (m_mgr->m_confDebugWhisper)
+            TellMaster("Changing target to %s by force!", forcedTarget->GetName());
         m_targetCombat = forcedTarget;
+        m_ignoreNeutralizeEffect = true;    // Bypass IsNeutralized() checks on next updates
         m_targetChanged = true;
+        m_targetType = (m_combatOrder & (ORDERS_TANK | ORDERS_MAIN_TANK) ? TARGET_THREATEN : TARGET_NORMAL);
     }
+
+    // we already have a target and we are not forced to change it
+    if (m_targetCombat)
+    {
+        // We have a target but it is neutralised and we are not forced to attack it: clear it for now
+        if ((IsNeutralized(m_targetCombat) && !m_ignoreNeutralizeEffect))
+        {
+            m_targetCombat = nullptr;
+            m_targetType = TARGET_NORMAL;
+            m_targetChanged = true;
+            return;
+        }
+        else
+        {
+            if (!IsNeutralized(m_targetCombat) && m_ignoreNeutralizeEffect)
+                m_ignoreNeutralizeEffect = false;                           // target is no longer neutralised, clear ignore order
+            return;                                                         // keep on attacking target
+        }
+    }
+
+    // No target for now, try to get one
     // do we have to assist someone?
     if (!m_targetCombat && (m_combatOrder & ORDERS_ASSIST) && m_targetAssist)
     {
-        m_targetCombat = FindAttacker((ATTACKERINFOTYPE)(AIT_VICTIMNOTSELF | AIT_LOWESTTHREAT), m_targetAssist);
-        if (m_mgr->m_confDebugWhisper && m_targetCombat)
-            TellMaster("Attacking %s to assist %s", m_targetCombat->GetName(), m_targetAssist->GetName());
-        m_targetType = (m_combatOrder & ORDERS_TANK || m_combatOrder & ORDERS_MAIN_TANK ? TARGET_THREATEN : TARGET_NORMAL);
-        m_targetChanged = true;
+        candidateTarget = FindAttacker((ATTACKERINFOTYPE)(AIT_VICTIMNOTSELF | AIT_LOWESTTHREAT), m_targetAssist);
+        if (candidateTarget && !IsNeutralized(candidateTarget))
+        {
+            m_targetCombat = candidateTarget;
+            if (m_mgr->m_confDebugWhisper)
+                TellMaster("Attacking %s to assist %s", m_targetCombat->GetName(), m_targetAssist->GetName());
+            m_targetType = (m_combatOrder & (ORDERS_TANK | ORDERS_MAIN_TANK) ? TARGET_THREATEN : TARGET_NORMAL);
+            m_targetChanged = true;
+        }
     }
     // are there any other attackers?
     if (!m_targetCombat)
     {
-        m_targetCombat = FindAttacker();
-        m_targetType = (m_combatOrder & ORDERS_TANK || m_combatOrder & ORDERS_MAIN_TANK ? TARGET_THREATEN : TARGET_NORMAL);
-        m_targetChanged = true;
+        candidateTarget = FindAttacker();
+        if (candidateTarget && !IsNeutralized(candidateTarget))
+        {
+            m_targetCombat = candidateTarget;
+            m_targetType = (m_combatOrder & (ORDERS_TANK | ORDERS_MAIN_TANK) ? TARGET_THREATEN : TARGET_NORMAL);
+            m_targetChanged = true;
+        }
     }
     // no attacker found anyway
     if (!m_targetCombat)
@@ -2477,13 +2497,26 @@ Player* PlayerbotAI::GetGroupTank()
     if (m_bot->GetGroup())
     {
         Group::MemberSlotList const& groupSlot = m_bot->GetGroup()->GetMemberSlots();
+        // First loop: we look for a main tank (only bots with JOB_MAIN_TANK) can announce themselves as main tank
         for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
         {
             Player* groupMember = sObjectMgr.GetPlayer(itr->guid);
             if (!groupMember || !groupMember->GetPlayerbotAI())
                 continue;
-            if (groupMember->GetPlayerbotAI()->IsTank())
+            if (groupMember->GetPlayerbotAI()->IsMainTank())
                 return groupMember;
+        }
+        // Second loop: we look for any tank (bots with JOB_TANK or human players with the right class/spec combination)
+        for (Group::member_citerator itr = groupSlot.begin(); itr != groupSlot.end(); itr++)
+        {
+            Player* groupMember = sObjectMgr.GetPlayer(itr->guid);
+            if (groupMember)
+            {
+                if (!groupMember->GetPlayerbotAI() && m_bot->GetPlayerbotAI()->GetClassAI()->GetTargetJob(groupMember) & JOB_TANK)
+                    return groupMember;
+                else if (groupMember->GetPlayerbotAI() && groupMember->GetPlayerbotAI()->IsTank())
+                    return groupMember;
+            }
         }
     }
 
@@ -3627,6 +3660,7 @@ void PlayerbotAI::SetCombatOrderByStr(std::string str, Unit* target)
     else if (str == "assist")       co = ORDERS_ASSIST;
     else if (str == "heal")         co = ORDERS_HEAL;
     else if (str == "mainheal")     co = ORDERS_MAIN_HEAL;
+    else if (str == "notmainheal")  co = ORDERS_NOT_MAIN_HEAL;
     else if (str == "protect")      co = ORDERS_PROTECT;
     else if (str == "passive")      co = ORDERS_PASSIVE;
     else if (str == "pull")         co = ORDERS_TEMP_WAIT_TANKAGGRO;
@@ -3660,6 +3694,12 @@ void PlayerbotAI::SetCombatOrder(CombatOrderType co, Unit* target)
 
     switch (co)
     {
+        case ORDERS_TANK:   // 1(01)
+        {
+            if (m_combatOrder & ORDERS_MAIN_TANK)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_MAIN_TANK);  // ORDERS_TANK and ORDERS_MAIN_TANK exclude one each other, remove one when the other is set
+            break;
+        }
         case ORDERS_ASSIST: // 2(10)
         {
             if (!target)
@@ -3668,6 +3708,12 @@ void PlayerbotAI::SetCombatOrder(CombatOrderType co, Unit* target)
                 return;
             }
             else m_targetAssist = target;
+            break;
+        }
+        case ORDERS_HEAL:    // 4(100)
+        {
+            if (m_combatOrder & ORDERS_MAIN_HEAL)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_MAIN_HEAL);  // ORDERS_HEAL and ORDERS_MAIN_HEAL exclude one each other, remove one when the other is set
             break;
         }
         case ORDERS_PROTECT: // 10(10000)
@@ -3687,7 +3733,27 @@ void PlayerbotAI::SetCombatOrder(CombatOrderType co, Unit* target)
             m_targetProtect = 0;
             return;
         }
-        case ORDERS_RESET: // FFFF(11111111)
+        case ORDERS_MAIN_TANK:  // 1000(1000000000000)
+        {
+            if (m_combatOrder & ORDERS_TANK)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_TANK);   // ORDERS_TANK and ORDERS_MAIN_TANK exclude one each other, remove one when the other is set
+            break;
+        }
+        case ORDERS_MAIN_HEAL:  // 2000(10000000000000)
+        {
+            if (m_combatOrder & ORDERS_HEAL)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_HEAL);   // ORDERS_HEAL and ORDERS_MAIN_HEAL exclude one each other, remove one when the other is set
+            if (m_combatOrder & ORDERS_NOT_MAIN_HEAL)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_NOT_MAIN_HEAL);  // ORDERS_NOT_MAIN_HEAL and ORDERS_MAIN_HEAL exclude one each other, remove one when the other is set
+            break;
+        }
+        case ORDERS_NOT_MAIN_HEAL:  // 4000(100000000000000)
+        {
+            if (m_combatOrder & ORDERS_MAIN_HEAL)
+                m_combatOrder = (CombatOrderType)((uint32) m_combatOrder & (uint32) ~ORDERS_MAIN_HEAL);  // ORDERS_NOT_MAIN_HEAL and ORDERS_MAIN_HEAL exclude one each other, remove one when the other is set
+            break;
+        }
+        case ORDERS_RESET: // FFFF(1111111111111111)
         {
             m_combatOrder = ORDERS_NONE;
             m_targetAssist = 0;
@@ -3887,11 +3953,6 @@ void PlayerbotAI::Announce(AnnounceFlags msg)
     }
 }
 
-bool PlayerbotAI::IsMoving()
-{
-    return (m_bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE ? false : true);
-}
-
 // some possible things to use in AI
 // GetRandomContactPoint
 // GetPower, GetMaxPower
@@ -3903,6 +3964,9 @@ bool PlayerbotAI::IsMoving()
 
 void PlayerbotAI::UpdateAI(const uint32 /*p_time*/)
 {
+    if (GetClassAI()->GetWaitUntil() <= CurrentTime())
+        GetClassAI()->ClearWait();
+
     if (CurrentTime() < m_ignoreAIUpdatesUntilTime)
         return;
 
@@ -4101,7 +4165,7 @@ void PlayerbotAI::UpdateAI(const uint32 /*p_time*/)
     }
 
     // if commanded to follow master and not already following master then follow master
-    if (!m_bot->isInCombat() && !IsMoving())
+    if (!m_bot->isInCombat() && !m_bot->IsMoving())
         return MovementReset();
 
     // do class specific non combat actions
@@ -5354,7 +5418,7 @@ void PlayerbotAI::findNearbyCreature()
                                         default:
                                             break;
                                     }
-                                    
+
                                 }
                             break;
                         }
@@ -5384,7 +5448,7 @@ void PlayerbotAI::findNearbyCreature()
                                         default:
                                             break;
                                     }
-                                    
+
                                 }
                             ListAuctions();
                             break;
